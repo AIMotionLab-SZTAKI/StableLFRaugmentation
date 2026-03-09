@@ -409,6 +409,71 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
                 X.append(YX[:, 2+self.ny:] * self.std_x + self.mu_x)
         return Y, X, iter_counter, fpi_residuals
 
+    def sparsity_analysis(self):
+        """
+        Provides a sparsity analysis of LFR matrices.
+
+        Returns
+        -------
+        z_reduction : int
+            The number of redundant dimensions in the latent variable z_a.
+        w_reduction : int
+            The number of redundant dimensions in the latent variable w_a.
+        """
+        th = self.params
+        ANN_params = self.get_network_params(th)
+
+        Cz_a = np.array(th[-7])
+        Dzu_a = np.array(th[-5])
+        Bw_a = np.array(th[-13])
+        Dyw_a = np.array(th[-9])
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-4])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw_ab_aa = np.array(Dzw[self.nx + self.nu:, :])
+        Dzw_ba_aa = np.array(Dzw[:, self.nx + self.ny:])
+
+        W0 = np.array(ANN_params[0])
+        W_last = np.array(ANN_params[-2])
+        b_last = np.array(ANN_params[-1])
+
+        # zero-out coefficients smaller than self.zero_coeff
+        Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
+        Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
+        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
+        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
+        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
+        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
+        W0[np.abs(W0) <= self.zero_coeff] = 0.
+        W_last[np.abs(W_last) <= self.zero_coeff] = 0.
+        b_last[np.abs(b_last) <= self.zero_coeff] = 0.
+
+        z_reduction = 0
+        w_reduction = 0
+        print("Sparsity analysis results:")
+
+        for i in range(self.nz):
+            if (np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and
+                np.max(np.abs(W0[:, i])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_aa[i, :])) <= self.zero_coeff):
+                print(f"z_{i+1} can be eliminated")
+                z_reduction += 1
+
+        for i in range(self.nw):
+            if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
+                np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff and
+                np.max(np.abs(Dzw_ba_aa[:, i])) <= self.zero_coeff):
+                print(f"w_{i + 1} can be eliminated")
+                w_reduction += 1
+
+        return z_reduction, w_reduction
+
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                                x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
         """Initializes the parameters of the static well-posed LFR-based augmentation structure."""
@@ -622,7 +687,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
         @jax.jit
-        def group_lasso_fun(th, x0):
+        def group_lasso_fun(th):
             cost = 0.
             ANN_params = self.get_network_params(th)
             W_last = ANN_params[-2]
@@ -646,6 +711,293 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         return group_lasso_fun
 
     def create_LFR_matrix_mask(self, th, eps):
+        # TODO: implement in sub-classes as well
+        raise NotImplementedError
+
+    def save_LFR_matrices(self, filename):
+        raise NotImplementedError
+
+    def compute_new_l1_reg_weights(self, eps=1e-4):
+        raise NotImplementedError
+
+
+########################################################################################################################
+#                                  STATIC CONTRACTING LFR-BASED STRUCTURE
+########################################################################################################################
+class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
+    """
+    Static LFR-based model augmentation structure with guaranteed well-posedness and contraction parametrization.
+    """
+    def __init__(self,
+                 known_sys: Any,
+                 hidden_layers: int,
+                 nodes_per_layer: int,
+                 activation: str,
+                 nz: int,
+                 nw: int,
+                 lipschitz_const: float,
+                 x0: Optional[Union[Array, list[Array]]] = None,
+                 seed: Union[int, list[int]] = 42,
+                 std_x: Optional[np.ndarray] = None,
+                 std_u: Optional[np.ndarray] = None,
+                 std_y: Optional[np.ndarray] = None,
+                 mu_x: Optional[np.ndarray] = None,
+                 mu_u: Optional[np.ndarray] = None,
+                 mu_y: Optional[np.ndarray] = None,
+                 fpi_n_max: int = 100,
+                 fpi_tol: float = 1e-3,
+                 contraction_rate: float = 1.,
+                 mask_params: Optional[list[Array]] = None,
+                 mask_eps: float = 1e-4,
+                 ) -> None:
+        """
+        Initializes the model structure.
+
+        Parameters
+        ----------
+        known_sys: Any
+            Baseline model (first-principle model) to be augmented.
+        hidden_layers : int
+            Number of hidden layers in the ANN.
+        nodes_per_layer : int
+            Neurons per hidden layer in the ANN.
+        activation : str
+            Activation function for the ANN.
+        nz : int
+            Dimension of the latent variable z_a.
+        nw : int
+            Dimension of the latent variable w_a.
+        lipschitz_const : float
+            Lipschitz constant of the baseline model (with normalization terms).
+        x0 : array or list of arrays, optional
+            Initial state(s).
+        seed : int or list, optional
+            Initialization seed(s).
+        std_x, std_u, std_y : ndarray, optional
+            Standard deviations for normalization.
+        mu_x, mu_u, mu_y : ndarray, optional
+            Means for normalization.
+        fpi_n_max : int, optional
+            Maximum iteration for the Fixed-Point Iterations during model evaluation. Defaults to 100.
+        fpi_tol : float, optional
+            Tolerance for the Fixed-Point Iterations during model evaluation. Defaults to 1e-3.
+        contraction_rate : float, optional
+            Maximum of the contraction rate between (0, 1]. The parametrization ensures that the tru contraction rate is
+            less than this provided value. Defaults to 1.
+        mask_params : list of ndarrays, optional
+            Tuned parameters from a previous model training. Elements that are approximately zero in mask_params are kept
+            as zeros in the new model instance. If None, no masking is applied. Defaults to None.
+        mask_eps : float, optional
+            Threshold to determine which variables are zeroed out based on the masking parameters. Parameters smaller than
+            this in absolute value are viewed as 0. Defaults to 1e-4.
+        """
+        self.Bw_dim1 = known_sys.nx
+        self.Bw_dim2 = known_sys.nx + known_sys.ny + nw
+        self.Cz_dim1 = nz + known_sys.nu + known_sys.nx
+        self.Cz_dim2 = known_sys.nx
+        self.contraction_rate = contraction_rate
+        if self.contraction_rate <= 0. or self.contraction_rate > 1.:
+            raise ValueError("contraction_rate must be between 0 and 1")
+        super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
+                         activation=activation, nz=nz, nw=nw, lipschitz_const=lipschitz_const, x0=x0, seed=seed,
+                         std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u, fpi_n_max=fpi_n_max,
+                         fpi_tol=fpi_tol, mask_params=mask_params, mask_eps=mask_eps)
+
+    def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
+                               x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
+        """Initializes the parameters of the static contracting LFR-based augmentation structure."""
+        key = jax.random.key(seed)
+        key_net, key_params = jax.random.split(key, 2)
+
+        # init. network parameters for static additive case
+        network_params = initialize_network(input_features=self.nz, output_features=self.nw, hidden_layers=hidden_layers,
+                                            nodes_per_layer=nodes_per_layer, key=key_net, act_fun=activation)
+
+        # add physical parameters to optimization variables (if necessary)
+        if self.tune_physical_params:
+            network_params.append(known_sys.init_params)  # theta = params[-23]
+        self.physical_param_idx = -23
+
+        n_B = max(self.Bw_dim1, self.Bw_dim2)
+        m_B = min(self.Bw_dim1, self.Bw_dim2)
+        n_C = self.Cz_dim1
+        m_C = self.Cz_dim2
+        n_D = max(self.Dzw_dim1, self.Dzw_dim2)
+        m_D = min(self.Dzw_dim1, self.Dzw_dim2)
+
+        keys = jax.random.split(key_params, 16)
+
+        # generate matrix structure for initialization
+        d_D = jnp.array([-5.], dtype=jnp.float64)
+        X_A = jax.random.uniform(key=keys[0], shape=(self.nx, self.nx), minval=-1, maxval=1, dtype=jnp.float64)
+        Y_A = jax.random.uniform(key=keys[1], shape=(self.nx, self.nx), minval=-1, maxval=1, dtype=jnp.float64)
+        Bu = jax.random.uniform(key=keys[2], shape=(self.nx, self.nu), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        X_B = jax.random.uniform(key=keys[3], shape=(m_B, m_B), minval=-1, maxval=1, dtype=jnp.float64)
+        Y_B = jax.random.uniform(key=keys[4], shape=(m_B, m_B), minval=-1, maxval=1, dtype=jnp.float64)
+        Z_B = jax.random.uniform(key=keys[5], shape=(n_B-m_B, m_B), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Cy = jax.random.uniform(key=keys[6], shape=(self.ny, self.nx), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Dyu = jax.random.uniform(key=keys[7], shape=(self.ny, self.nu), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Dyw_b = jnp.hstack((jnp.zeros((self.ny, self.nx), dtype=jnp.float64), jnp.eye(self.ny, dtype=jnp.float64)))
+        Dyw_a = jax.random.uniform(key=keys[8], shape=(self.ny, self.nw), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        X_C = jax.random.uniform(key=keys[9], shape=(m_C, m_C), minval=-1, maxval=1, dtype=jnp.float64)
+        Y_C = jax.random.uniform(key=keys[10], shape=(m_C, m_C), minval=-1, maxval=1, dtype=jnp.float64)
+        Z_C = jax.random.uniform(key=keys[11], shape=(n_C-m_C, m_C), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Dzu_b = jnp.vstack((jnp.zeros(shape=(self.nx, self.nu), dtype=jnp.float64), jnp.eye(self.nu, dtype=jnp.float64)))
+        Dzu_a = jax.random.uniform(key=keys[12], shape=(self.nz, self.nu), minval=-1, maxval=1, dtype=jnp.float64)
+        X_D = jax.random.uniform(key=keys[13], shape=(m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        Y_D = jax.random.uniform(key=keys[14], shape=(m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        Z_D = jax.random.uniform(key=keys[15], shape=(n_D - m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        alpha = jnp.array([-2.], dtype=jnp.float64)
+        beta = jnp.array([0.], dtype=jnp.float64)
+        gamma = jnp.array([-4.], dtype=jnp.float64)
+
+        if self.W_mask is not None:
+            Bu *= self.W_mask["Bu"]
+            Cy *= self.W_mask["Cy"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+
+        # add interconnection matrices to optimized variables
+        network_params.append(d_D)  # d_D = params[-22]
+        network_params.append(X_A)  # X_A = params[-21]
+        network_params.append(Y_A)  # Y_B = params[-20]
+        network_params.append(Bu)  # Bu = params[-19]
+        network_params.append(X_B)  # X_B = params[-18]
+        network_params.append(Y_B)  # Y_B = params[-17]
+        network_params.append(Z_B)  # Z_B = params[-16]
+        network_params.append(Cy)  # Cy = params[-15]
+        network_params.append(Dyu)  # Dyu = params[-14]
+        network_params.append(Dyw_b)  # Dyw_b = params[-13]
+        network_params.append(Dyw_a)  # Dyw_a = params[-12]
+        network_params.append(X_C)  # X_C = params[-11]
+        network_params.append(Y_C)  # Y_C = params[-10]
+        network_params.append(Z_C)  # Z_C = params[-9]
+        network_params.append(Dzu_b)  # Dzu_b = params[-8]
+        network_params.append(Dzu_a)  # Dzu_a = params[-7]
+        network_params.append(X_D)  # X_D = params[-6]
+        network_params.append(Y_D)  # Y_D = params[-5]
+        network_params.append(Z_D)  # Z_D = params[-4]
+        network_params.append(alpha)  # alpha = params[-3]
+        network_params.append(beta)  # beta = params[-2]
+        network_params.append(gamma)  # gamma = params[-1]
+        self._init(params=network_params, x0=x0)
+
+    def _create_jitted_model_step(self, known_sys: Any, hidden_layers: int, activation: str,
+                                  ) -> Callable[[Array, Array, list[Array]], Tuple[Array, Array]]:
+        """Creates JIT-compiled state transition and output functions according to the given augmentation structure."""
+
+        learning_component = generate_simple_ann(hidden_layers, activation)
+
+        @ jax.jit
+        def nonlinear_components(z, params):
+            zb = z[:self.nx+self.nu]
+            za = z[self.nx+self.nu:]
+            zb_x = zb[:self.nx]
+            zb_u = zb[self.nx:]
+            phys_params = self.get_physical_params(params)
+
+            x_plus = (known_sys.f(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_x) / self.std_x
+            y = (known_sys.h(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_y) / self.std_y
+
+            w_a = learning_component(za, params)
+
+            return jnp.concatenate((x_plus, y, w_a))
+
+        @jax.jit
+        def contractive_map(z, x, u, params):
+            # 1-Lipschitz D_bar, then scaling with L
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(params[-6], params[-5])
+                Dzw = nn.sigmoid(params[-22]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(params[-6], params[-5], params[-4])
+                Dzw = nn.sigmoid(params[-22]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(params[-6], params[-5], params[-4])
+                Dzw = nn.sigmoid(params[-22]) * D_bar.T / self.lipschitz_const
+
+            C_bar = general_cayley(params[-11], params[-10], params[-9])
+            # scaling factor sigma_C
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(params[-3])) / kappa)
+            sigma_C = (1 / jnp.exp(params[-2])) * kappa_sqrt - nn.sigmoid(params[-1]) / (kappa * jnp.exp(params[-2]) * kappa_sqrt)
+            Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)  # transformation + scaling with Lipschitz const.
+            Cz_b = Cz[:(self.nx+self.nu), :]
+            Cz_a = Cz[(self.nx+self.nu):, :]
+
+            if self.W_mask is None:
+                zb_feedthrough = Cz_b @ x + params[-8] @ u  # zb(x,u) = Cz_b @ x + Dzu_b @ u
+                za_feedthrough = Cz_a @ x + params[-7] @ u  # za(x,u) = Cz_a @ x + Dzu_a @ u
+                z_feedthrough = jnp.hstack((zb_feedthrough, za_feedthrough))
+                z_next = Dzw @ nonlinear_components(z, params) + z_feedthrough
+            else:
+                zb_feedthrough = (self.W_mask["Cz_b"] * Cz_b) @ x + (self.W_mask["Dzu_b"] * params[-8]) @ u  # zb(x,u) = Cz_b @ x + Dzu_b @ u
+                za_feedthrough = (self.W_mask["Cz_a"] * Cz_a) @ x + (self.W_mask["Dzu_a"] * params[-7]) @ u  # za(x,u) = Cz_a @ x + Dzu_a @ u
+                z_feedthrough = jnp.hstack((zb_feedthrough, za_feedthrough))
+                z_next = (self.W_mask["D_zw"] * Dzw) @ nonlinear_components(z, params) + z_feedthrough
+            return z_next
+
+        fpi = jaxopt.FixedPointIteration(fixed_point_fun=contractive_map, maxiter=self.fpi_n_max, implicit_diff=True,
+                                         tol=self.fpi_tol)
+
+        @jax.jit
+        def model_step_with_iter_count(x, u, params):
+            # f : (nx+nu) --> (nx)
+            # h : (nx+nu) --> (ny)
+
+            z0 = jnp.concatenate((x, u, jnp.zeros(self.nz, dtype=jnp.float64)))
+            z_star, fpi_state = fpi.run(z0, x, u, params)
+            iter_num = fpi_state.iter_num
+            residual = fpi_state.error
+
+            w = nonlinear_components(z_star, params)
+            wb = w[:self.nx + self.ny]
+            wa = w[self.nx + self.ny:]
+
+            A_bar = simple_cayley(params[-21], params[-20])
+            A = nn.sigmoid(params[-3]) * A_bar * self.contraction_rate  # scaling
+
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(params[-6], params[-5])
+                Dzw = nn.sigmoid(params[-22]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(params[-6], params[-5], params[-4])
+                Dzw = nn.sigmoid(params[-22]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(params[-6], params[-5], params[-4])
+                Dzw = nn.sigmoid(params[-22]) * D_bar.T / self.lipschitz_const
+                # scaling factor sigma_B
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(params[-3])) / kappa)
+
+            B_bar = general_cayley(params[-18], params[-17], params[-16])
+            Bw = B_bar.T * jnp.exp(params[-2]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+            Bw_b = Bw[:, :(self.nx + self.ny)]
+            Bw_a = Bw[:, (self.nx + self.ny):]
+
+            if self.W_mask is None:
+                x_next = A @ x + params[-19] @ u + Bw_b @ wb + Bw_a @ wa  # x+ = A @ x + Bu @ u + Bw_b @ wb +  Bw_a @ wa
+                y = params[-15] @ x + params[-14] @ u + params[-13] @ wb + params[-12] @ wa  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw @ wa
+            else:
+                x_next = ((self.W_mask["A"] * A) @ x + (self.W_mask["Bu"] * params[-19]) @ u +
+                          (self.W_mask["Bw_b"] * Bw_b) @ wb + (self.W_mask["Bw_a"] * Bw_a) @ wa)  # x+ = A @ x + Bu @ u + Bw_b @ wb + Bw_a @ wa
+                y = ((self.W_mask["Cy"] * params[-15]) @ x + (self.W_mask["Dyu"] * params[-14]) @ u +
+                     (self.W_mask["Dyw_b"] * params[-13]) @ wb + (self.W_mask["Dyw_a"] * params[-12]) @ wa)  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw_a @ wa
+
+            return x_next, y, iter_num, residual
+
+        @jax.jit
+        def model_step(x, u, params):
+            x_next, y, iter_num, residual = self.model_step_with_iter_count(x, u, params)
+            return x_next, y
+
+        self.model_step_with_iter_count = model_step_with_iter_count
+        return model_step
+
+    def create_LFR_matrix_mask(self, th, eps):
         raise NotImplementedError
 
     def save_LFR_matrices(self, filename):
@@ -655,66 +1007,13 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         raise NotImplementedError
 
     def sparsity_analysis(self):
-        """
-        Provides a sparsity analysis of LFR matrices.
+        raise NotImplementedError
 
-        Returns
-        -------
-        z_reduction : int
-            The number of redundant dimensions in the latent variable z_a.
-        w_reduction : int
-            The number of redundant dimensions in the latent variable w_a.
-        """
-        th = self.params
-        ANN_params = self.get_network_params(th)
+    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        raise NotImplementedError
 
-        Cz_a = np.array(th[-7])
-        Dzu_a = np.array(th[-5])
-        Bw_a = np.array(th[-13])
-        Dyw_a = np.array(th[-9])
+    def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        raise NotImplementedError
 
-        if self.Dzw_dim1 == self.Dzw_dim2:
-            D_bar = simple_cayley(th[-4], th[-3])
-            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
-        elif self.Dzw_dim1 > self.Dzw_dim2:
-            D_bar = general_cayley(th[-4], th[-3], th[-4])
-            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
-        else:
-            D_bar = general_cayley(th[-4], th[-3], th[-2])
-            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
-        Dzw_ab_aa = np.array(Dzw[self.nx + self.nu:, :])
-        Dzw_ba_aa = np.array(Dzw[:, self.nx + self.ny:])
-
-        W0 = np.array(ANN_params[0])
-        W_last = np.array(ANN_params[-2])
-        b_last = np.array(ANN_params[-1])
-
-        # zero-out coefficients smaller than self.zero_coeff
-        Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
-        Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
-        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
-        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
-        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
-        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
-        W0[np.abs(W0) <= self.zero_coeff] = 0.
-        W_last[np.abs(W_last) <= self.zero_coeff] = 0.
-        b_last[np.abs(b_last) <= self.zero_coeff] = 0.
-
-        z_reduction = 0
-        w_reduction = 0
-        print("Sparsity analysis results:")
-
-        for i in range(self.nz):
-            if (np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and
-                np.max(np.abs(W0[:, i])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_aa[i, :])) <= self.zero_coeff):
-                print(f"z_{i+1} can be eliminated")
-                z_reduction += 1
-
-        for i in range(self.nw):
-            if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
-                np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff and
-                np.max(np.abs(Dzw_ba_aa[:, i])) <= self.zero_coeff):
-                print(f"w_{i + 1} can be eliminated")
-                w_reduction += 1
-
-        return z_reduction, w_reduction
+    def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        raise NotImplementedError
