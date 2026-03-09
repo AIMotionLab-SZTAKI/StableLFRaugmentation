@@ -3,6 +3,7 @@ from model_augmentation_jax.networks import initialize_network, generate_simple_
 from model_augmentation_jax.utils import simple_cayley, general_cayley
 import numpy as np
 from jax import numpy as jnp
+from jax_sysid.utils import vec_reshape
 import jax
 import jaxopt
 import flax.linen as nn
@@ -391,7 +392,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             return x_next, y
 
         if N_meas == 1:
-            _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), U_scaled)
+            _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), vec_reshape(U_scaled))
             iter_counter = YX[:, 0]
             fpi_residuals = YX[:, 1]
             Y = YX[:, 2:2+self.ny] * self.std_y + self.mu_y
@@ -402,7 +403,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             iter_counter = []
             fpi_residuals = []
             for i in range(N_meas):
-                _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled[i].reshape(-1), U_scaled[i])
+                _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled[i].reshape(-1), vec_reshape(U_scaled[i]))
                 iter_counter.append(YX[:, 0])
                 fpi_residuals.append(YX[:, 1])
                 Y.append(YX[:, 2:2+self.ny] * self.std_y + self.mu_y)

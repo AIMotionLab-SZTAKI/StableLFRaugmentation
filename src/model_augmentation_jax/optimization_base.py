@@ -531,14 +531,14 @@ class AugmentationBase(object):
             return x_next, y
 
         if N_meas == 1:
-            _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), U_scaled)
+            _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), vec_reshape(U_scaled))
             Y = YX[:, 0:self.ny] * self.std_y + self.mu_y
             X = YX[:, self.ny:] * self.std_x + self.mu_x
         else:
             Y = []
             X = []
             for i in range(N_meas):
-                _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled[i].reshape(-1), U_scaled[i])
+                _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled[i].reshape(-1), vec_reshape(U_scaled[i]))
                 Y.append(YX[:, 0:self.ny] * self.std_y + self.mu_y)
                 X.append(YX[:, self.ny:] * self.std_x + self.mu_x)
         return Y, X
@@ -615,8 +615,8 @@ class AugmentationBase(object):
             ui = (U[i] - self.mu_u) / self.std_u
             yi = (Y[i] - self.mu_y) / self.std_y
             x0i = (x0[i] - self.mu_x) / self.std_x
-            U_normed.append(ui)
-            Y_normed.append(yi)
+            U_normed.append(vec_reshape(ui))
+            Y_normed.append(vec_reshape(yi))
             x0_normed.append(x0i)
         dataset = {"U": U_normed, "Y": Y_normed}
         return dataset, x0_normed, len(U)

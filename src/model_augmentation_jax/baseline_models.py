@@ -94,14 +94,14 @@ class GeneralNonlinearSystem(object):
             return x, y
 
         if N_meas == 1:
-            _, YX = jax.lax.scan(model_step, x0.reshape(-1), U)
+            _, YX = jax.lax.scan(model_step, x0.reshape(-1), vec_reshape(U))
             Y = YX[:, 0:self.ny]
             X = YX[:, self.ny:]
         else:
             Y = []
             X = []
             for i in range(N_meas):
-                _, YX = jax.lax.scan(model_step, x0[i].reshape(-1), U[i])
+                _, YX = jax.lax.scan(model_step, x0[i].reshape(-1), vec_reshape(U[i]))
                 Y.append(YX[:, 0:self.ny])
                 X.append(YX[:, self.ny:])
         return Y, X
