@@ -562,6 +562,209 @@ class AugmentationBase(object):
 
         print("Zero ANN parameters: " + str(zero_params) + " from" + str(all_params) + ".")
 
+    def learn_x0(self,
+                 U: Array,
+                 Y: Array,
+                 rho_x0: Optional[float] = 1e-4,
+                 RTS_epochs: int = 1,
+                 verbosity: bool = True,
+                 lbfgs_refinement: bool = False,
+                 lbfgs_epochs: int = 1000,
+                 Q: Optional[Array] = None,
+                 R: Optional[Array] = None,
+                 x0_init: Optional[Array] = None,
+                 ) -> Array:
+        """
+        EKF+RTS-based initial state estimation with L-BFGS refinement according to the jax-sysid toolbox.
+        See: https://github.com/bemporad/jax-sysid
+
+        Parameters
+        ----------
+        U : ndarray
+            Input sequence based on which the state estimation is computed.
+        Y : ndarray
+            Corresponding true output sequence.
+        rho_x0 : float, optional
+            Regularization coefficient for the initial state. If NOne, no regularization is applied. Defaults to 1e-4.
+        RTS_epochs : int, optional
+            Number of EKF/RTS passes for initial estimate. Defaults to 1.
+        verbosity : bool, optional
+            Sets the verbosity level (True/False). Defaults to True.
+        lbfgs_refinement : bool, optional
+            Determines whether to refine the estimate obtained by the EKF/RTS passes with L-BFGS or not. Defaults to False.
+        Q : ndarray, optional
+            Process noise covariance matrix. If None, Q = 1e-5 * I is applied. Defaults to None.
+        R : ndarray, optional
+            Measurement noise covariance matrix. If None, R = I is applied. Defaults to None.
+        x0_init : ndarray, optional
+            Initial guess for x0. If None, the estimation starts from x0 = 0. Defaults to None.
+
+        Returns
+        -------
+        x0 : ndarray
+            Estimated initial state value.
+        """
+        nx = self.nx
+        ny = self.ny
+        N = U.shape[0]
+        Y = (vec_reshape(Y.copy()) - self.mu_y) / self.std_y
+        U = (vec_reshape(U.copy()) - self.mu_u) / self.std_u
+
+        @jax.jit
+        def state_fcn(x, u, params):
+            x_plus, _ = self.model_step(x, u, params)
+            return x_plus
+
+        @jax.jit
+        def output_fcn(x, u, params):
+            _, y = self.model_step(x, u, params)
+            return y
+
+        @jax.jit
+        def Ck(x, u):
+            return jax.jacrev(output_fcn)(x, u=u, params=self.params)
+
+        @jax.jit
+        def Ak(x, u):
+            return jax.jacrev(state_fcn)(x, u=u, params=self.params)
+
+        if rho_x0 is None:
+            rho_x0 = 0.
+        if R is None:
+            R = np.eye(ny)
+        if Q is None:
+            Q = 1.e-5 * np.eye(nx)
+
+        # Forward EKF pass:
+        @jax.jit
+        def EKF_update(state, yuk):
+            x, P, mse_loss = state
+            yk = yuk[:ny]
+            u = yuk[ny:]
+
+            # measurement update
+            y = output_fcn(x, u, self.params)
+            Ckk = Ck(x, u)
+            PC = P @ Ckk.T
+            # M = PC / (R + C @PC) # this solves the linear system M*(R + C @PC) = PC
+            # Note: Matlab's mrdivide A / B = (B'\A')' = np.linalg.solve(B.conj().T, A.conj().T).conj().T
+            M = jax.scipy.linalg.solve((R+Ckk@PC), PC.T, assume_a='pos').T
+            e = yk-y
+            mse_loss += np.sum(e**2)  # just for monitoring purposes
+            x1 = x + M@e  # x(k | k)
+
+            # Standard Kalman measurement update
+            # P -= M@PC.T
+            # P = (P + P.T)/2. # P(k|k)
+
+            # Joseph stabilized covariance update
+            IKH = -M@Ckk
+            IKH += jnp.eye(nx)
+            P1 = IKH@P@IKH.T+M@R@M.T  # P(k|k)
+
+            # Time update
+            Akk = Ak(x1, u)
+            P2 = Akk@P1@Akk.T+Q
+            # P2 = (P2+P2.T)/2.
+            x2 = state_fcn(x1, u, self.params)
+            output = (x1, P1, x2, P2, Akk)
+
+            return (x2, P2, mse_loss), output
+
+        @jax.jit
+        def RTS_update(state, input):
+            x, P = state
+            P1, P2, x1, x2, A = input
+
+            # G=(PP1[k]@AA[k].T)/PP2[k]
+            try:
+                G = jax.scipy.linalg.solve(P2, (P1@A.T).T, assume_a='pos').T
+            except:
+                G = jax.scipy.linalg.solve(P2, (P1@A.T).T, assume_a='gen').T
+            x = x1+G@(x-x2)
+            P = P1+G@(P-P2)@G.T
+            return (x, P), None
+
+        # L2-regularization on initial state x0, 0.5*rho_x0*||x0||_2^2
+        if rho_x0 > 0:
+            P = np.eye(nx) / (rho_x0 * N)
+        else:
+            P = np.eye(nx)
+        if x0_init is None:
+            x = np.zeros(nx)
+        else:
+            x = x0_init.copy().reshape(-1)
+
+        for epoch in range(RTS_epochs):
+            mse_loss = 0.
+
+            # Forward EKF pass
+            state = (x, P, mse_loss)
+            state, output = jax.lax.scan(EKF_update, state, np.hstack((Y, U)))
+            XX1, PP1, XX2, PP2, AA = output
+            # PP1 = P(k | k)
+            # PP2 = P(k + 1 | k)
+            # XX1 = x(k | k)
+            # XX2 = x(k + 1 | k)
+            mse_loss = state[2]/N
+
+            # RTS smoother pass:
+            x = XX2[N-1]
+            P = PP2[N-1]
+            state = (x, P)
+            input = (PP1[::-1], PP2[::-1], XX1[::-1], XX2[::-1], AA[::-1])
+            state, _ = jax.lax.scan(RTS_update, state, input)
+            x, P = state
+
+            if verbosity:
+                print(f"\nRTS smoothing, epoch: {epoch+1: 3d}/{RTS_epochs: 3d}, MSE loss = {mse_loss: 8.6f}")
+
+        x = np.array(x)
+
+        isstatebounded = self.x0_min is not None or self.x0_max is not None
+        if isstatebounded:
+            lb = self.x0_min
+            if isinstance(lb, list):
+                lb = lb[0]
+            if lb is None:
+                lb = -np.inf*np.ones(nx)
+            ub = self.x0_max
+            if isinstance(ub, list):
+                ub = ub[0]
+            if ub is None:
+                ub = np.inf*np.ones(nx)
+            if np.any(x < lb) or np.any(x > ub):
+                lbfgs_refinement = True
+
+        if lbfgs_refinement:
+            # Refine via L-BFGS with very small penalty on x0
+            options = lbfgs_options(
+                iprint=-1, iters=lbfgs_epochs, lbfgs_tol=1.e-10, memory=100)
+
+            @jax.jit
+            def SS_step(x, u):
+                x_next, y = self.model_step(x, u, self.params)
+                return x_next.reshape(-1), y
+
+            @jax.jit
+            def J(x0):
+                _, Yhat = jax.lax.scan(SS_step, x0, U)
+                return jnp.sum((Yhat - Y) ** 2) / U.shape[0] + 0.5 * rho_x0 * jnp.sum(x0**2)
+            if not isstatebounded:
+                solver = jaxopt.ScipyMinimize(fun=J, tol=options["ftol"], method="L-BFGS-B", maxiter=options["maxfun"],
+                                              options=options)
+                x, state = solver.run(x)
+            else:
+                solver = jaxopt.ScipyBoundedMinimize(fun=J, tol=options["ftol"], method="L-BFGS-B",
+                                                     maxiter=options["maxfun"], options=options)
+                x, state = solver.run(x, bounds=(lb, ub))
+            x = np.array(x)
+
+            if verbosity:
+                mse_loss = state.fun_val - 0.5 * rho_x0 * np.sum(x**2)
+                print(f"\nFinal loss MSE (after LBFGS refinement) = {mse_loss: 8.6f}")
+        return x * self.std_x + self.mu_x
+
     def _augm_struct_initialization(self, sys: Any, hidden_layers: int, nodes_per_layer: int,
                                     x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
         """Creates the ANN structure for augmentation and initializes all parameters."""
