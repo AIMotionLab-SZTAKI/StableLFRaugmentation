@@ -1,17 +1,15 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax_sysid.models import Model, l2reg, xsat, l1reg, linreg, lbfgs_options, get_bounds, adam_solver
+from jax_sysid.models import l2reg, xsat, l1reg, lbfgs_options, get_bounds, adam_solver
 from jax_sysid.utils import vec_reshape
 import jaxopt
 from model_augmentation_jax.baseline_models import verify_known_sys
 from joblib import Parallel, delayed, cpu_count
 from functools import partial
 import time
-import tqdm
-from matplotlib import pyplot as plt
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 Array = Union[np.ndarray, jnp.ndarray]
 
 epsil_lasso = 1.e-16
@@ -176,7 +174,6 @@ class AugmentationBase(object):
                                  tau_w: float = 0.,
                                  tau_x: float = 0.,
                                  ann_lipschitz_regul_coeff: float = 0.,
-                                 ann_lipschitz_bound: Optional[float] = None,
                                  ):
         """
         Sets up all regularization options for model training,including conventional elastic-type regularization,
@@ -201,8 +198,6 @@ class AugmentationBase(object):
                Group-lasso regularization coefficients for variables z, w, and x, respectively.
            ann_lipschitz_regul_coeff : float, optional
                Regularization coefficient for the ANN Lipschitz bound.
-           ann_lipschitz_bound : float, optional
-               Lipschitz bound for the ANN.
            """
 
         if rho_base > 0:
@@ -248,9 +243,12 @@ class AugmentationBase(object):
             group_lasso_x_fun = self._add_group_lasso_x(tau_x)
 
         if ann_lipschitz_regul_coeff > 0:
-            if ann_lipschitz_bound is None:
-                raise ValueError("Please provide a valid ANN Lipschitz bound!")
-            print(f"ANN Lipschitz bound is regularized with: rho={ann_lipschitz_regul_coeff}")
+            if hasattr(self, 'lipschitz_const'):
+                ann_lipschitz_bound = self.lipschitz_const
+            else:
+                ann_lipschitz_bound = 0.  # if we do not enforce a specific bound, then penalize the ANN Lipschitz constant
+
+            print(f"ANN Lipschitz constant is regularized when exceeding bound {ann_lipschitz_bound} with coefficient: rho={ann_lipschitz_regul_coeff}")
 
             @jax.jit
             def ann_lipschitz_regul_fun(params):
@@ -302,6 +300,7 @@ class AugmentationBase(object):
                                     x0_max: Optional[Union[Array, list[Array]]] = None,
                                     output_loss_fun: Optional[Callable[[Array, Array], float]] = None,
                                     verbosity: int = 1,
+                                    state_sat: Optional[float] = None,
                                     ) -> None:
         """
         Set up optimization parameters before model training.
@@ -336,6 +335,9 @@ class AugmentationBase(object):
             function is used. Defaults to None.
         verbosity : int, optional
             Sets the verbosity level during optimization. Defaults to 1.
+        state_sat : float, optional
+            Sets the saturation level for the states during training to handle numerical stability losses that are
+            mainly present during L-BFGS-B optimization. If None, the default value is set as xsat = 1000. Defaults to None.
         """
         # set optimization parameters (iteration length and optimization algorithm-specific options)
         self.adam_epochs = adam_epochs
@@ -362,6 +364,8 @@ class AugmentationBase(object):
         self.output_loss = output_loss_fun
 
         self.verbosity = verbosity
+        if state_sat is not None:
+            self.xsat = state_sat
 
     def run_optimizer(self,
                       Y: Union[Array, list[Array]],

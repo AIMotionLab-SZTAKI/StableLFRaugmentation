@@ -1,8 +1,11 @@
 from model_augmentation_jax.optimization_base import AugmentationBase
 from model_augmentation_jax.networks import initialize_network, generate_simple_ann
+from model_augmentation_jax.utils import simple_cayley, general_cayley
 import numpy as np
 from jax import numpy as jnp
 import jax
+import jaxopt
+import flax.linen as nn
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 Array = Union[np.ndarray, jnp.ndarray]
@@ -67,6 +70,64 @@ class StaticLFRAugmentation(AugmentationBase):
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
                          activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
                          mu_x=mu_x, mu_u=mu_u)
+
+    def sparsity_analysis(self):
+        """
+        Provides a sparsity analysis of LFR matrices.
+
+        Returns
+        -------
+        z_reduction : int
+            The number of redundant dimensions in the latent variable z_a.
+        w_reduction : int
+            The number of redundant dimensions in the latent variable w_a.
+        """
+        th = self.params
+        Cz_a = np.array(th[-2])
+        Dzu_a = np.array(th[-1])
+        ANN_params = self.get_network_params(th)
+        W0 = np.array(ANN_params[0])
+        W_last = np.array(ANN_params[-2])
+        b_last = np.array(ANN_params[-1])
+        Bw_a = np.array(th[-7])
+        Dyw_a = np.array(th[-3])
+
+        # zero-out coefficients smaller than self.zero_coeff
+        Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
+        Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
+        W0[np.abs(W0) <= self.zero_coeff] = 0.
+        W_last[np.abs(W_last) <= self.zero_coeff] = 0.
+        b_last[np.abs(b_last) <= self.zero_coeff] = 0.
+        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
+        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
+
+        if self.Dzw_structure is not None:  # now only lower-triangular Dzw structure is supported
+            Dzw_ab_state = np.array(th[-12])
+            Dzw_ab_state[np.abs(Dzw_ab_state) <= self.zero_coeff] = 0.
+            Dzw_ab_output = np.array(th[-11])
+            Dzw_ab_output[np.abs(Dzw_ab_output) <= self.zero_coeff] = 0.
+
+        z_reduction = 0
+        w_reduction = 0
+        print("Sparsity analysis results:")
+
+        for i in range(self.nz):
+            if np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and np.max(np.abs(W0[:, i])) <= self.zero_coeff:
+                if self.Dzw_structure is not None:
+                    if np.max(np.abs(Dzw_ab_state[i, :])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_output[i, :])) <= self.zero_coeff:
+                        print(f"z_{i+1} can be eliminated")
+                        z_reduction += 1
+                else:
+                    print(f"z_{i + 1} can be eliminated")
+                    z_reduction += 1
+
+        for i in range(self.nw):
+            if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
+                np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff):
+                print(f"w_{i + 1} can be eliminated")
+                w_reduction += 1
+
+        return z_reduction, w_reduction
 
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                               x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
@@ -196,51 +257,464 @@ class StaticLFRAugmentation(AugmentationBase):
         raise NotImplementedError("L1 regularization on LFR matrices is currently only implemented for the fully"
                                   "parametrized case (with the well-posedness conditions).")
 
+
+########################################################################################################################
+#                                  STATIC WELL-POSED LFR-BASED STRUCTURE
+########################################################################################################################
+class StaticWellPosedLFRAugmentation(AugmentationBase):
+    """
+    Static LFR-based model augmentation structure with guaranteed well-posedness parametrization.
+    """
+    def __init__(self,
+                 known_sys: Any,
+                 hidden_layers: int,
+                 nodes_per_layer: int,
+                 activation: str,
+                 nz: int,
+                 nw: int,
+                 lipschitz_const: float,
+                 x0: Optional[Union[Array, list[Array]]] = None,
+                 seed: Union[int, list[int]] = 42,
+                 std_x: Optional[np.ndarray] = None,
+                 std_u: Optional[np.ndarray] = None,
+                 std_y: Optional[np.ndarray] = None,
+                 mu_x: Optional[np.ndarray] = None,
+                 mu_u: Optional[np.ndarray] = None,
+                 mu_y: Optional[np.ndarray] = None,
+                 fpi_n_max: int = 100,
+                 fpi_tol: float = 1e-3,
+                 mask_params: Optional[list[Array]] = None,
+                 mask_eps: float = 1e-4,
+                 ) -> None:
+        """
+        Initializes the model structure.
+
+        Parameters
+        ----------
+        known_sys: Any
+            Baseline model (first-principle model) to be augmented.
+        hidden_layers : int
+            Number of hidden layers in the ANN.
+        nodes_per_layer : int
+            Neurons per hidden layer in the ANN.
+        activation : str
+            Activation function for the ANN.
+        nz : int
+            Dimension of the latent variable z_a.
+        nw : int
+            Dimension of the latent variable w_a.
+        lipschitz_const : float
+            Lipschitz constant of the baseline model (with normalization terms).
+        x0 : array or list of arrays, optional
+            Initial state(s).
+        seed : int or list, optional
+            Initialization seed(s).
+        std_x, std_u, std_y : ndarray, optional
+            Standard deviations for normalization.
+        mu_x, mu_u, mu_y : ndarray, optional
+            Means for normalization.
+        fpi_n_max : int, optional
+            Maximum iteration for the Fixed-Point Iterations during model evaluation. Defaults to 100.
+        fpi_tol : float, optional
+            Tolerance for the Fixed-Point Iterations during model evaluation. Defaults to 1e-3.
+        mask_params : list of ndarrays, optional
+            Tuned parameters from a previous model training. Elements that are approximately zero in mask_params are kept
+            as zeros in the new model instance. If None, no masking is applied. Defaults to None.
+        mask_eps : float, optional
+            Threshold to determine which variables are zeroed out based on the masking parameters. Parameters smaller than
+            this in absolute value are viewed as 0. Defaults to 1e-4.
+        """
+        self.nz = nz
+        self.nw = nw
+        self.fpi_n_max = fpi_n_max
+        self.fpi_tol = fpi_tol
+        self.lipschitz_const = lipschitz_const
+        self.Dzw_dim1 = nz + known_sys.nx + known_sys.nu
+        self.Dzw_dim2 = nw + known_sys.nx + known_sys.ny
+        self.n = max(self.Dzw_dim1, self.Dzw_dim2)
+        if mask_params is not None:
+            self.W_mask = self.create_LFR_matrix_mask(mask_params, mask_eps)
+        else:
+            self.W_mask = None
+        self.model_step_with_iter_count = None
+        super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
+                         activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
+                         mu_x=mu_x, mu_u=mu_u)
+
+    def simulate(self,
+                 U: Union[Array, list[Array]],
+                 X0: Optional[Union[Array, list[Array]]] = None,
+                 ) -> Tuple[Union[Array, list[Array]], Union[Array, list[Array]], Union[Array, list[Array]], Union[Array, list[Array]]]:
+        """
+        Simulate the response of an augmented model structure on the test data.
+
+        Parameters
+        ----------
+        U : ndarray or list of ndarrays
+            Input signals for the data set. Must be N-by-nu shaped array or a list of Ni-by-nu shaped arrays.
+        X0 : ndarray or list of ndarrays, optional
+            Initial state vector for each data set. If None, simulations are started from x0=0.
+
+        Returns
+        -------
+        Y : ndarray or list of ndarrays
+            Simulated output trajectory/trajectories. Shape is (N, ny) for a single trajectory or a list of arrays
+            with shape (Ni, ny).
+        X : ndarray or list of ndarrays
+             Simulated state trajectory/trajectories. Shape is (N, nx) for a single trajectory or a list of arrays with
+             shape (Ni, nx).
+        iter_counter : ndarray or list of ndararys
+            Contains how many fixed-point iterations were needed to evaluate the model at each time step.
+        fpi_residuals : ndarray or list of ndararys
+            Contains the (approximated) residuals of the fixed-point iterations needed to evaluate the model at each time step.
+        """
+        # Scale input data and init. state
+        if isinstance(U, list):
+            N_meas = len(U)
+            U_scaled = [(ui - self.mu_u) / self.std_u for ui in U]
+            if X0 is None:
+                x0_scaled = [(np.zeros(self.nx) - self.mu_x) / self.std_x] * N_meas
+            else:
+                x0_scaled = [(x0i - self.mu_x) / self.std_x for x0i in X0]
+        else:
+            N_meas = 1
+            U_scaled = (U.copy() - self.mu_u) / self.std_u
+            if X0 is None:
+                x0_scaled = (np.zeros(self.nx) - self.mu_x) / self.std_x
+            else:
+                x0_scaled = (X0.copy() - self.mu_x) / self.std_x
+
+        def model_step_fixed_params(x, u):
+            x_next, y, iter_num, residual = self.model_step_with_iter_count(x, u, self.params)
+            y = jnp.hstack((iter_num, residual, y, x))
+            x_next = x_next.reshape(-1)
+            return x_next, y
+
+        if N_meas == 1:
+            _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), U_scaled)
+            iter_counter = YX[:, 0]
+            fpi_residuals = YX[:, 1]
+            Y = YX[:, 2:2+self.ny] * self.std_y + self.mu_y
+            X = YX[:, 2+self.ny:] * self.std_x + self.mu_x
+        else:
+            Y = []
+            X = []
+            iter_counter = []
+            fpi_residuals = []
+            for i in range(N_meas):
+                _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled[i].reshape(-1), U_scaled[i])
+                iter_counter.append(YX[:, 0])
+                fpi_residuals.append(YX[:, 1])
+                Y.append(YX[:, 2:2+self.ny] * self.std_y + self.mu_y)
+                X.append(YX[:, 2+self.ny:] * self.std_x + self.mu_x)
+        return Y, X, iter_counter, fpi_residuals
+
+    def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
+                               x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
+        """Initializes the parameters of the static well-posed LFR-based augmentation structure."""
+        key = jax.random.key(seed)
+        key_net, key_params = jax.random.split(key, 2)
+
+        # init. network parameters for static additive case
+        network_params = initialize_network(input_features=self.nz, output_features=self.nw, hidden_layers=hidden_layers,
+                                            nodes_per_layer=nodes_per_layer, key=key_net, act_fun=activation)
+
+        # add physical parameters to optimization variables (if necessary)
+        if self.tune_physical_params:
+            network_params.append(known_sys.init_params)  # theta = params[-17]
+        self.physical_param_idx = -17
+
+        n_D = max(self.Dzw_dim1, self.Dzw_dim2)
+        m_D = min(self.Dzw_dim1, self.Dzw_dim2)
+
+        keys = jax.random.split(key_params, 11)
+        # generate matrix structure for initialization
+        A = jax.random.uniform(key=keys[0], shape=(self.nx, self.nx), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Bu = jax.random.uniform(key=keys[1], shape=(self.nx, self.nu), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Bw_b = jnp.hstack((jnp.eye(self.nx, dtype=jnp.float64), jnp.zeros((self.nx, self.ny), dtype=jnp.float64)))
+        Bw_a = jax.random.uniform(key=keys[2], shape=(self.nx, self.nw), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Cy = jax.random.uniform(key=keys[3], shape=(self.ny, self.nx), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Dyu = jax.random.uniform(key=keys[4], shape=(self.ny, self.nu), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Dyw_b = jnp.hstack((jnp.zeros((self.ny, self.nx), dtype=jnp.float64), jnp.eye(self.ny, dtype=jnp.float64)))
+        Dyw_a = jax.random.uniform(key=keys[5], shape=(self.ny, self.nw), minval=-1e-3, maxval=1e-3, dtype=jnp.float64)
+        Cz_b = jnp.vstack((jnp.eye(self.nx, dtype=jnp.float64), jnp.zeros(shape=(self.nu, self.nx), dtype=jnp.float64)))
+        Cz_a = jax.random.uniform(key=keys[6], shape=(self.nz, self.nx), minval=-1, maxval=1, dtype=jnp.float64)
+        Dzu_b = jnp.vstack((jnp.zeros(shape=(self.nx, self.nu), dtype=jnp.float64), jnp.eye(self.nu, dtype=jnp.float64)))
+        Dzu_a = jax.random.uniform(key=keys[7], shape=(self.nz, self.nu), minval=-1, maxval=1, dtype=jnp.float64)
+        X_D = jax.random.uniform(key=keys[8], shape=(m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        Y_D = jax.random.uniform(key=keys[9], shape=(m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        Z_D = jax.random.uniform(key=keys[10], shape=(n_D - m_D, m_D), minval=-1., maxval=1., dtype=jnp.float64)
+        d_D = jnp.array([-5.], dtype=jnp.float64)
+
+        if self.W_mask is not None:
+            A *= self.W_mask["A"]
+            Bu *= self.W_mask["Bu"]
+            Bw_b *= self.W_mask["Bw_b"]
+            Bw_a *= self.W_mask["Bw_a"]
+            Cy *= self.W_mask["Cy"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Cz_b *= self.W_mask["Cz_b"]
+            Cz_a *= self.W_mask["Cz_a"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+
+        # add interconnection matrix to optimized variables
+        network_params.append(A)  # A = params[-16]
+        network_params.append(Bu)  # Bu = params[-15]
+        network_params.append(Bw_b)  # Bw_b = params[-14]
+        network_params.append(Bw_a)  # Bw_a = params[-13]
+        network_params.append(Cy)  # Cy = params[-12]
+        network_params.append(Dyu)  # Dyu = params[-11]
+        network_params.append(Dyw_b)  # Dyw_b = params[-10]
+        network_params.append(Dyw_a)  # Dyw_a = params[-9]
+        network_params.append(Cz_b)  # Cz_b = params[-8]
+        network_params.append(Cz_a)  # Cz_a = params[-7]
+        network_params.append(Dzu_b)  # Dzu_b = params[-6]
+        network_params.append(Dzu_a)  # Dzu_a = params[-5]
+        network_params.append(X_D)  # X_D = params[-4]
+        network_params.append(Y_D)  # Y_D = params[-3]
+        network_params.append(Z_D)  # Z_D = params[-2]
+        network_params.append(d_D)  # d_D = params[-1]
+        self._init(params=network_params, x0=x0)
+
+    def _create_jitted_model_step(self, known_sys: Any, hidden_layers: int, activation: str,
+                                  ) -> Callable[[Array, Array, list[Array]], Tuple[Array, Array]]:
+        """Creates JIT-compiled state transition and output functions according to the given augmentation structure."""
+
+        learning_component = generate_simple_ann(hidden_layers, activation)
+
+        @jax.jit
+        def nonlinear_components(z, params):
+            zb = z[:self.nx + self.nu]
+            za = z[self.nx + self.nu:]
+            zb_x = zb[:self.nx]
+            zb_u = zb[self.nx:]
+            phys_params = self.get_physical_params(params)
+
+            x_plus = (known_sys.f(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_x) / self.std_x
+            y = (known_sys.h(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_y) / self.std_y
+
+            w_a = learning_component(za, params)
+
+            return jnp.concatenate((x_plus, y, w_a))
+
+        @jax.jit
+        def contractive_map(z, x, u, params):
+            # 1-Lipschitz D_bar, then scaling with L
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(params[-4], params[-3])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar.T / self.lipschitz_const
+
+            if self.W_mask is None:
+                zb_feedthrough = params[-8] @ x + params[-6] @ u  # zb(x,u) = Cz_b @ x + Dzu_b @ u
+                za_feedthrough = params[-7] @ x + params[-5] @ u  # za(x,u) = Cz_a @ x + Dzu_a @ u
+                z_feedthrough = jnp.hstack((zb_feedthrough, za_feedthrough))
+                z_next = Dzw @ nonlinear_components(z, params) + z_feedthrough
+            else:
+                zb_feedthrough = (self.W_mask["Cz_b"] * params[-8]) @ x + (self.W_mask["Dzu_b"] * params[-6]) @ u  # zb(x,u) = Cz_b @ x + Dzu_b @ u
+                za_feedthrough = (self.W_mask["Cz_a"] * params[-7]) @ x + (self.W_mask["Dzu_a"] * params[-5]) @ u  # za(x,u) = Cz_a @ x + Dzu_a @ u
+                z_feedthrough = jnp.hstack((zb_feedthrough, za_feedthrough))
+                z_next = (self.W_mask["Dzw"] * Dzw) @ nonlinear_components(z, params) + z_feedthrough
+            return z_next
+
+        fpi = jaxopt.FixedPointIteration(fixed_point_fun=contractive_map, maxiter=self.fpi_n_max, implicit_diff=True,
+                                         tol=self.fpi_tol)
+
+        @jax.jit
+        def model_step_with_iter_count(x, u, params):
+            # f : (nx+nu) --> (nx)
+            # h : (nx+nu) --> (ny)
+
+            z0 = jnp.concatenate((x, u, jnp.zeros(self.nz, dtype=jnp.float64)))
+            z_star, fpi_state = fpi.run(z0, x, u, params)
+            iter_num = fpi_state.iter_num
+            residual = fpi_state.error
+
+            w = nonlinear_components(z_star, params)
+            wb = w[:self.nx + self.ny]
+            wa = w[self.nx + self.ny:]
+            if self.W_mask is None:
+                x_next = params[-16] @ x + params[-15] @ u + params[-14] @ wb + params[-13] @ wa  # x+ = A @ x + Bu @ u + Bw_b @ wb + Bw_a @ wa
+                y = params[-12] @ x + params[-11] @ u + params[-10] @ wb + params[-9] @ wa  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw_a @ wa
+            else:
+                x_next = ((self.W_mask["A"] * params[-16]) @ x + (self.W_mask["Bu"] * params[-15]) @ u +
+                          (self.W_mask["Bw_b"] * params[-14]) @ wb + (self.W_mask["Bw_a"] * params[
+                            -13]) @ wa)  # x+ = A @ x + Bu @ u + Bw_b @ wb + Bw_a @ wa
+                y = ((self.W_mask["Cy"] * params[-12]) @ x + (self.W_mask["Dyu"] * params[-11]) @ u +
+                     (self.W_mask["Dyw_b"] * params[-10]) @ wb + (self.W_mask["Dyw_a"] * params[-9]) @ wa)  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw_a @ wa
+
+            return x_next, y, iter_num, residual
+
+        @jax.jit
+        def model_step(x, u, params):
+            x_next, y, iter_num, residual = self.model_step_with_iter_count(x, u, params)
+            return x_next, y
+
+        self.model_step_with_iter_count = model_step_with_iter_count
+        return model_step
+
+    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        if reg_coeffs is None:
+            W_dim = 0
+            for i in range(5, 17):
+                W_dim += self.params[-i].reshape(-1).shape[0]
+            W_dim += self.Dzw_dim1 * self.Dzw_dim2
+            reg_coeffs = np.ones(shape=(W_dim,), dtype=np.float64)
+
+        @jax.jit
+        def LFR_matrix_l1_reg(params):
+            A = params[-16].reshape(-1)
+            Bu = params[-15].reshape(-1)
+            Bw_b = params[-14].reshape(-1)
+            Bw_a = params[-13].reshape(-1)
+            Cy = params[-12].reshape(-1)
+            Dyu = params[-11].reshape(-1)
+            Dyw_b = params[-10].reshape(-1)
+            Dyw_a = params[-9].reshape(-1)
+            Cz_b = params[-8].reshape(-1)
+            Cz_a = params[-7].reshape(-1)
+            Dzu_b = params[-6].reshape(-1)
+            Dzu_a = params[-5].reshape(-1)
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(params[-4], params[-3])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar.T / self.lipschitz_const
+            W_vec = jnp.hstack((A, Bu, Bw_b, Bw_a, Cy, Dyu, Dyw_b, Dyw_a, Cz_b, Cz_a, Dzu_b, Dzu_a, Dzw.reshape(-1)))
+            return tau * jnp.sum(jnp.abs(W_vec * reg_coeffs))
+        return LFR_matrix_l1_reg
+
+    def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            Cz_a = th[-7]
+            Dzu_a = th[-5]
+            ANN_params = self.get_network_params(th)
+            W0 = ANN_params[0]
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-4], th[-3])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-4], th[-3], th[-4])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+            Dzw_ab_aa = Dzw[self.nx + self.nu:, :]
+            for i in range(self.nz):
+                cost += tau * jnp.sqrt(jnp.sum(Cz_a[i, :] ** 2) + jnp.sum(Dzu_a[i, :] ** 2) + jnp.sum(W0[:, i] ** 2) +
+                                         jnp.sum(Dzw_ab_aa[i, :] ** 2))
+            return cost
+        return group_lasso_fun
+
+    def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        @jax.jit
+        def group_lasso_fun(th, x0):
+            cost = 0.
+            ANN_params = self.get_network_params(th)
+            W_last = ANN_params[-2]
+            b_last = ANN_params[-1]
+            Bw_a = th[-13]
+            Dyw_a = th[-9]
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-4], th[-3])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-4], th[-3], th[-4])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+            Dzw_ba_aa = Dzw[:, self.nx+self.ny:]
+            for i in range(self.nw):
+                cost += tau * jnp.sqrt(jnp.sum(W_last[i, :] ** 2) + b_last[i] ** 2 + jnp.sum(Bw_a[:, i] ** 2) +
+                                         jnp.sum(Dyw_a[:, i] ** 2) + jnp.sum(Dzw_ba_aa[:, i] ** 2))
+            return cost
+        return group_lasso_fun
+
+    def create_LFR_matrix_mask(self, th, eps):
+        raise NotImplementedError
+
+    def save_LFR_matrices(self, filename):
+        raise NotImplementedError
+
+    def compute_new_l1_reg_weights(self, eps=1e-4):
+        raise NotImplementedError
+
     def sparsity_analysis(self):
+        """
+        Provides a sparsity analysis of LFR matrices.
+
+        Returns
+        -------
+        z_reduction : int
+            The number of redundant dimensions in the latent variable z_a.
+        w_reduction : int
+            The number of redundant dimensions in the latent variable w_a.
+        """
         th = self.params
-        Cz_a = np.array(th[-2])
-        Dzu_a = np.array(th[-1])
         ANN_params = self.get_network_params(th)
+
+        Cz_a = np.array(th[-7])
+        Dzu_a = np.array(th[-5])
+        Bw_a = np.array(th[-13])
+        Dyw_a = np.array(th[-9])
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-4])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw_ab_aa = np.array(Dzw[self.nx + self.nu:, :])
+        Dzw_ba_aa = np.array(Dzw[:, self.nx + self.ny:])
+
         W0 = np.array(ANN_params[0])
         W_last = np.array(ANN_params[-2])
         b_last = np.array(ANN_params[-1])
-        Bw_a = np.array(th[-7])
-        Dyw_a = np.array(th[-3])
 
         # zero-out coefficients smaller than self.zero_coeff
         Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
         Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
+        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
+        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
+        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
+        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
         W0[np.abs(W0) <= self.zero_coeff] = 0.
         W_last[np.abs(W_last) <= self.zero_coeff] = 0.
         b_last[np.abs(b_last) <= self.zero_coeff] = 0.
-        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
-        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
-
-        if self.Dzw_structure is not None:  # now only lower-triangular Dzw structure is supported
-            Dzw_ab_state = np.array(th[-12])
-            Dzw_ab_state[np.abs(Dzw_ab_state) <= self.zero_coeff] = 0.
-            Dzw_ab_output = np.array(th[-11])
-            Dzw_ab_output[np.abs(Dzw_ab_output) <= self.zero_coeff] = 0.
 
         z_reduction = 0
         w_reduction = 0
         print("Sparsity analysis results:")
 
         for i in range(self.nz):
-            if np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and np.max(np.abs(W0[:, i])) <= self.zero_coeff:
-                if self.Dzw_structure is not None:
-                    if np.max(np.abs(Dzw_ab_state[i, :])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_output[i, :])) <= self.zero_coeff:
-                        print(f"z_{i+1} can be eliminated")
-                        z_reduction += 1
-                else:
-                    print(f"z_{i + 1} can be eliminated")
-                    z_reduction += 1
+            if (np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and
+                np.max(np.abs(W0[:, i])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_aa[i, :])) <= self.zero_coeff):
+                print(f"z_{i+1} can be eliminated")
+                z_reduction += 1
 
         for i in range(self.nw):
             if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
-                np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff):
+                np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff and
+                np.max(np.abs(Dzw_ba_aa[:, i])) <= self.zero_coeff):
                 print(f"w_{i + 1} can be eliminated")
                 w_reduction += 1
 
         return z_reduction, w_reduction
-

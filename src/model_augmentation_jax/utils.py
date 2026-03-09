@@ -51,3 +51,55 @@ def NRMSE_loss(Yhat: Array,
     Y = vec_reshape(Y)
     Yhat = vec_reshape(Yhat)
     return float(jnp.mean(jnp.sqrt(jnp.mean((Y - Yhat)**2, axis=0)) / jnp.std(Y, axis=0)))
+
+
+def build_N_from_XYZ(
+        X: Array,
+        Y: Array,
+        Z: Array,
+) -> Array:
+    """Builds N matrix from X, Y, Z tunable matrices for the generalized Cayley transformation."""
+    # X: (m,m), Y: (m,m), Z: (n-m,m)
+    return X.T @ X + (Y - Y.T) + Z.T @ Z + 1e-6 * jnp.eye(X.shape[0])
+
+
+def build_N_from_XY(
+        X: Array,
+        Y: Array,
+) -> Array:
+    """Builds N matrix from tunable X and Y matrices for the simple Cayley transformation."""
+    # X: (n,n), Y: (n,n)
+    return X.T @ X + (Y - Y.T) + 1e-6 * jnp.eye(X.shape[0])
+
+
+def general_cayley(
+        X: Array,
+        Y: Array,
+        Z: Array,
+) -> Array:
+    """General Cayley transformation for n-by-m matrices."""
+    N = build_N_from_XYZ(X, Y, Z)
+    m = N.shape[0]
+    I = jnp.eye(m)
+
+    # compute M_top = Cayley(N) = N2 @ N1^{-1} and M_bottom = -2 Z @ N1^{-1}
+    inv = jnp.linalg.solve(I + N, I)
+    M_top = (I - N) @ inv
+    M_bot = -2. * Z @ inv
+    return jnp.vstack([M_top, M_bot])
+
+
+def simple_cayley(
+        X: Array,
+        Y: Array,
+) -> Array:
+    """Simple Cayley transformation for square matrices."""
+    N = build_N_from_XY(X, Y)
+    n = N.shape[0]
+    I = jnp.eye(n)
+    # N1 = I + N
+    # N2 = I - N
+
+    # compute M = Cayley(N)
+    M = (I - N) @ jnp.linalg.solve(I + N, I)
+    return M
