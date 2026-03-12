@@ -1018,3 +1018,276 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
         raise NotImplementedError
+
+
+########################################################################################################################
+#                                       DYNAMIC LFR-BASED STRUCTURE
+########################################################################################################################
+class DynamicLFRAugmentation(AugmentationBase):
+    def __init__(self,
+                 known_sys: Any,
+                 n_augm_states: int,
+                 hidden_layers: int,
+                 nodes_per_layer: int,
+                 activation: str,
+                 nz_a: int,
+                 nw_a: int,
+                 x0: Optional[Union[Array, list[Array]]] = None,
+                 seed: Union[int, list[int]] = 42,
+                 std_x: Optional[np.ndarray] = None,
+                 std_u: Optional[np.ndarray] = None,
+                 std_y: Optional[np.ndarray] = None,
+                 mu_x: Optional[np.ndarray] = None,
+                 mu_u: Optional[np.ndarray] = None,
+                 mu_y: Optional[np.ndarray] = None,
+                 Dzw_structure: Optional[str] = None,
+                 ) -> None:
+        """
+        Initialize the static LFR-based model augmentation structure.
+
+        Parameters
+        ----------
+        known_sys : object
+            Baseline (first-principles) model.
+        n_augm_states : int
+            Number of augmented (hidden) states beyond the baseline states.
+        hidden_layers : int
+            Number of hidden layers in the ANN.
+        nodes_per_layer : int
+            Neurons per hidden layer in the ANN.
+        activation : str
+            Activation function for the ANN.
+        nz_a : int
+            Dimension of the latent variable z_a.
+        nw_a : int
+            Dimension of the latent variable w_a.
+        x0 : array or list of arrays, optional
+            Initial state(s).
+        seed : int or list, optional
+            Initialization seed(s).
+        std_x, std_u, std_y : ndarray, optional
+            Standard deviations for normalization.
+        mu_x, mu_u, mu_y : ndarray, optional
+            Means for normalization.
+        Dzw_structure : str, optional
+            If "lower", the $D_{zw}$ matrix is implemented as a strictly lower triangular matrix, if "upper", than a
+            strictly lower triangular matrix. If None, $D_{zw}\equiv 0$ is applied.
+        """
+        self.nz = nz_a
+        self.nw = nw_a
+        if n_augm_states <= 0: raise ValueError(
+            "n_augm_states must be > 0. For augmentation with no additional states, apply a static structure.")
+        self.nx_b = known_sys.nx
+        self.nx_a = n_augm_states
+        self.Dzw_structure = Dzw_structure
+
+        # combined normalization constants for base and augmented states (augmented states assumed to be zero-mean and std. of 1)
+        self.std_xb = np.ones(known_sys.nx) if std_x is None else std_x
+        self.mu_xb = np.zeros(known_sys.nx) if mu_x is None else mu_x
+        std_x = np.hstack((self.std_xb.copy(), np.ones(self.nx_a)))
+        mu_x = np.hstack((self.mu_xb.copy(), np.zeros(self.nx_a)))
+
+        super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
+                         activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
+                         mu_x=mu_x, mu_u=mu_u)
+        self.nx = known_sys.nx + n_augm_states
+
+    def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
+                               x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
+        """Initializes the parameters according to the given augmentation structure."""
+
+        key = jax.random.key(seed)
+        key_net, key_params = jax.random.split(key, 2)
+
+        if x0 is None:
+            x0_init = np.zeros(self.nx_b + self.nx_a)
+        else:
+            x0_init = x0.copy()
+            if isinstance(x0_init, list):
+                for i in range(len(x0_init)):
+                    x0_init[i] = np.concatenate((x0_init[i], np.zeros(self.nx_a)))
+            else:
+                x0_init = np.concatenate((x0_init, np.zeros(self.nx_a)))
+
+        # init. network parameters for static additive case
+        network_params = initialize_network(input_features=self.nz, output_features=self.nw,
+                                            hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer, key=key_net,
+                                            act_fun=activation)
+
+        nx_a = self.nx_a
+        nx_b = self.nx_b
+
+        # add physical parameters to optimization variables (if necessary)
+        if self.tune_physical_params:
+            network_params.append(known_sys.init_params)  # theta = params[-22] OR if Dzw_structure == 'lower' params[-23]
+
+        if self.Dzw_structure == 'lower':
+            keys = jax.random.split(key_params, 17)
+            Dzw_ab = jax.random.uniform(key=keys[16], shape=(self.nz, nx_b + self.ny), minval=-1e-3, maxval=1e-3,
+                                        dtype=jnp.float64)
+            self.physical_param_idx = -23
+        else:
+            keys = jax.random.split(key_params, 16)
+            self.physical_param_idx = -22
+
+        # generate matrix structure for initialization
+        A_bb = jnp.zeros((nx_b, nx_b), dtype=jnp.float64)
+        A_ba = jnp.zeros((nx_b, nx_a), dtype=jnp.float64)
+        A_ab = jax.random.uniform(key=keys[2], shape=(nx_a, nx_b), minval=-1, maxval=1, dtype=jnp.float64)
+        A_aa = jax.random.uniform(key=keys[3], shape=(nx_a, nx_a), minval=-1, maxval=1, dtype=jnp.float64)
+
+        Bu_b = jnp.zeros((nx_b, self.nu), dtype=jnp.float64)
+        Bu_a = jax.random.uniform(key=keys[5], shape=(nx_a, self.nu), minval=-1, maxval=1, dtype=jnp.float64)
+
+        Bw_bb = jnp.hstack((jnp.eye(nx_b, dtype=jnp.float64), jnp.zeros((nx_b, self.ny), dtype=jnp.float64)))
+        Bw_ba = jnp.zeros((nx_b, self.nw), dtype=jnp.float64)
+        Bw_ab = jnp.zeros((nx_a, nx_b + self.ny), dtype=jnp.float64)
+        Bw_aa = jax.random.uniform(key=keys[8], shape=(nx_a, self.nw), minval=-1, maxval=1, dtype=jnp.float64)
+
+        Cy_b = jnp.zeros((self.ny, nx_b), dtype=jnp.float64)
+        Cy_a = jnp.zeros((self.ny, nx_a), dtype=jnp.float64)
+        Dyu = jnp.zeros((self.ny, self.nu), dtype=jnp.float64)
+
+        Dyw_b = jnp.hstack((jnp.zeros((self.ny, nx_b), dtype=jnp.float64), jnp.eye(self.ny, dtype=jnp.float64)))
+        Dyw_a = jnp.zeros((self.ny, self.nw), dtype=jnp.float64)
+
+        Cz_bb = jnp.vstack((jnp.eye(nx_b, dtype=jnp.float64), jnp.zeros(shape=(self.nu, nx_b), dtype=jnp.float64)))
+        Cz_ba = jnp.zeros((nx_b + self.nu, nx_a), dtype=jnp.float64)
+        Cz_ab = jax.random.uniform(key=keys[13], shape=(self.nz, nx_b), minval=-1, maxval=1, dtype=jnp.float64)
+        Cz_aa = jax.random.uniform(key=keys[14], shape=(self.nz, nx_a), minval=-1, maxval=1, dtype=jnp.float64)
+
+        Dzu_b = jnp.vstack((jnp.zeros(shape=(nx_b, self.nu), dtype=jnp.float64), jnp.eye(self.nu, dtype=jnp.float64)))
+        Dzu_a = jax.random.uniform(key=keys[15], shape=(self.nz, self.nu), minval=-1, maxval=1, dtype=jnp.float64)
+
+        # add interconnection matrix to optimized variables
+        if self.Dzw_structure == 'lower':
+            network_params.append(Dzw_ab)  # Dzw_ab = params[-22]
+        network_params.append(A_bb)  # A_bb = params[-21]
+        network_params.append(A_ba)  # A_ba = params[-20]
+        network_params.append(A_ab)  # A_ab = params[-19]
+        network_params.append(A_aa)  # A_aa = params[-18]
+        network_params.append(Bu_b)  # Bu_b = params[-17]
+        network_params.append(Bu_a)  # Bu_a = params[-16]
+        network_params.append(Bw_bb)  # Bw_bb = params[-15]
+        network_params.append(Bw_ba)  # Bw_ba = params[-14]
+        network_params.append(Bw_ab)  # Bw_ab = params[-13]
+        network_params.append(Bw_aa)  # Bw_aa = params[-12]
+        network_params.append(Cy_b)  # Cy_b = params[-11]
+        network_params.append(Cy_a)  # Cy_a = params[-10]
+        network_params.append(Dyu)  # Dyu = params[-9]
+        network_params.append(Dyw_b)  # Dyw_b = params[-8]
+        network_params.append(Dyw_a)  # Dyw_a = params[-7]
+        network_params.append(Cz_bb)  # Cz_bb = params[-6]
+        network_params.append(Cz_ba)  # Cz_ba = params[-5]
+        network_params.append(Cz_ab)  # Cz_ab = params[-4]
+        network_params.append(Cz_aa)  # Cz_aa = params[-3]
+        network_params.append(Dzu_b)  # Dzu_b = params[-2]
+        network_params.append(Dzu_a)  # Dzu_a = params[-1]
+        self._init(params=network_params, x0=x0_init)
+
+    def _create_jitted_model_step(self, known_sys: Any, hidden_layers: int, activation: str,
+                                  ) -> Callable[[Array, Array, list[Array]], Tuple[Array, Array]]:
+        """Creates JIT-compiled state transition and output functions according to the given augmentation structure."""
+
+        learning_component = generate_simple_ann(hidden_layers, activation)
+
+        @jax.jit
+        def model_step(x, u, params):
+            # f : (nx+nu) --> (nx)
+            # h : (nx+nu) --> (ny)
+
+            xb = x[:self.nx_b]
+            xa = x[self.nx_b:]
+
+            # zb = Cz_bb @ xb + Cz_ba @ xa + Dzu_b @ u
+            zb = params[-6] @ xb + params[-5] @ xa + params[-2] @ u
+
+            zb_x = zb[:self.nx_b]
+            zb_u = zb[self.nx_b:]
+            phys_params = self.get_physical_params(params)
+            x_plus_fp = (known_sys.f(zb_x * self.std_xb + self.mu_xb, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_xb) / self.std_xb
+            y_fp = (known_sys.h(zb_x * self.std_xb + self.mu_xb, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_y) / self.std_y
+            wb = jnp.concatenate((x_plus_fp, y_fp))
+
+            # za = Cz_ab @ xb + Cz_aa @ xa + Dzu_a @ u
+            za = params[-4] @ xb + params[-3] @ xa + params[-1] @ u
+
+            if self.Dzw_structure == "lower":
+                za += params[-22] @ wb
+
+            wa = learning_component(za, params)
+
+            # xb+ = A_bb @ xb + A_ba @ xa + Bu_b @ u + Bw_bb @ wb + Bw_ba @ wa
+            xb_next = params[-21] @ xb + params[-20] @ xa + params[-17] @ u + params[-15] @ wb + params[-14] @ wa
+
+            # xa+ = A_ab @ xb + A_aa @ xa + Bu_a @ u + Bw_ab @ wb + Bw_aa @ wa
+            xa_next = params[-19] @ xb + params[-18] @ xa + params[-16] @ u + params[-13] @ wb + params[-12] @ wa
+            x_next = jnp.hstack((xb_next, xa_next))
+
+            # y = Cy_b @ xb + Cy_a @ xa + Dyu @ u + Dyw_b @ wb + Dyw_a @ wa
+            y = params[-11] @ xb + params[-10] @ xa + params[-9] @ u + params[-8] @ wb + params[-7] @ wa
+
+            return x_next, y
+
+        return model_step
+
+    def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            Cz_ab = th[-4]
+            Cz_aa = th[-3]
+            Dzu_a = th[-1]
+            if self.Dzw_structure == "lower":
+                Dzw_ab = th[-22]
+            ANN_params = self.get_network_params(th)
+            W0 = ANN_params[0]
+            b0 = ANN_params[1]
+            for i in range(self.nz):
+                cost += jnp.sum(Cz_ab[i, :] ** 2) + jnp.sum(Cz_aa[i, :] ** 2) + jnp.sum(Dzu_a[i, :] ** 2) + \
+                        jnp.sum(W0[:, i] ** 2) + b0[i] ** 2
+                if self.Dzw_structure == "lower":
+                    cost += jnp.sum(Dzw_ab[i, :] ** 2)
+            return tau * jnp.sqrt(cost)
+        return group_lasso_fun
+
+    def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            ANN_params = self.get_network_params(th)
+            W_last = ANN_params[-2]
+            b_last = ANN_params[-1]
+            Bw_ba = th[-14]
+            Bw_aa = th[-12]
+            Dyw_a = th[-7]
+            for i in range(self.nw):
+                cost += tau * jnp.sqrt(jnp.sum(W_last[i, :] ** 2) + b_last[i] ** 2 + jnp.sum(Bw_ba[:, i] ** 2) +
+                                         jnp.sum(Bw_aa[:, i] ** 2) + jnp.sum(Dyw_a[:, i] ** 2))
+            return cost
+        return group_lasso_fun
+
+    def _add_group_lasso_x(self, tau: float) -> Callable[[list[Array], list[Array]], float]:
+        @jax.jit
+        def group_lasso_fun(th, x0):
+            cost = 0.
+            A_ab = th[-19]
+            A_ba = th[-20]
+            A_aa = th[-18]
+            Bu_a = th[-16]
+            Bw_ab = th[-13]
+            Bw_aa = th[-12]
+            Cy_a = th[-10]
+            Cz_ba = th[-5]
+            Cz_aa = th[-3]
+
+            for i in range(self.nx_a):
+                cost += tau * jnp.sqrt(jnp.sum(A_ab[i, :] ** 2) + jnp.sum(A_aa[i, :] ** 2) + jnp.sum(Bu_a[i, :] ** 2) +
+                    jnp.sum(Bw_ab[i, :] ** 2) + jnp.sum(Bw_aa[i, :] ** 2) + sum([x0i[self.nx_b+i]**2 for x0i in x0]) +
+                    jnp.sum(Cz_ba[:, i] ** 2) + jnp.sum(Cz_aa[:, i] ** 2) + jnp.sum(Cy_a[:, i] ** 2) +
+                    jnp.sum(A_ba[:, i] ** 2) + jnp.sum(A_aa[:, i] ** 2) - A_aa[i, i] ** 2)
+            return cost
+        return group_lasso_fun
+
+    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        raise NotImplementedError("L1 regularization-based augmentation structure discovery is only implemented for the full (well-posed) parametrization!")
