@@ -367,10 +367,10 @@ class AugmentationBase(object):
         if state_sat is not None:
             self.xsat = state_sat
 
-    def run_optimizer(self,
-                      Y: Union[Array, list[Array]],
-                      U: Union[Array, list[Array]]
-                      ) -> None:
+    def fit(self,
+            Y: Union[Array, list[Array]],
+            U: Union[Array, list[Array]],
+            ) -> None:
         """
         Trains the model according to all the pre-set options.
 
@@ -444,11 +444,11 @@ class AugmentationBase(object):
         self.t_solve = t_solve
         return
 
-    def run_optimizer_parallel(self,
-                               Y: Union[Array, list[Array]],
-                               U: Union[Array, list[Array]],
-                               seeds: list[int],
-                               n_jobs: Optional[int] = None) -> list[Any]:
+    def fit_parallel(self,
+                     Y: Union[Array, list[Array]],
+                     U: Union[Array, list[Array]],
+                     seeds: list[int],
+                     n_jobs: Optional[int] = None) -> list[Any]:
         """
         Fits the model in parallel using multiple seeds.
 
@@ -693,7 +693,7 @@ class AugmentationBase(object):
         if x0_init is None:
             x = np.zeros(nx)
         else:
-            x = x0_init.copy().reshape(-1)
+            x = (x0_init.copy().reshape(-1) - self.mu_x) / self.std_x
 
         for epoch in range(RTS_epochs):
             mse_loss = 0.
