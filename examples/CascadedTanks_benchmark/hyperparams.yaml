@@ -1,0 +1,28 @@
+# ANN hyperparameters (learning component)
+hidden_layers: 1
+n_nodes: 16
+activation: swish
+
+# Model structure hyperparameters (latent variable dimensions)
+nz: 3
+nw: 2
+
+# Fixed Point Iteration-related settings
+fpi_n_max: 8
+fpi_tol: 0.000001
+
+# Regularization options
+rho_base: 0.01
+rho_aug: 0.00001
+ann_lipschitz_regul_coeff: 0.001
+
+# Optimization settings
+adam_epochs: 1000
+lbfgs_epochs: 100
+lbfgs_memory: 50
+
+# change up specific options for the contracting parametrization
+activation_contr: tanh
+ann_lipschitz_regul_coeff_contr: 1.
+adam_epochs_contr: 2000
+lbfgs_memory_contr: 10
