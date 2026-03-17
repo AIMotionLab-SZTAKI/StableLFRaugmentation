@@ -8,7 +8,7 @@ python3 cascaded_tanks_example.py -h
 ```
 
 This command returns the following description of the script and its arguments:
-```bash
+```text
 Example script for testing LFR-based model augmentation on the Cascaded Tanks benchmark problem.
 
 options:
@@ -30,8 +30,8 @@ python3 cascaded_tanks_example.py --seed 3 --LFR_struct WP
 ```
 Note that the reported benchmark results were obtained using this specific random seed. Due to potential differences in numerical behavior across operating systems and Python versions, exact reproducibility of the results may require using the same software environment as reported.
 
-### Contracting LFR model augmentation
-The well-posed (WP) LFR model augmentation structure can be evaluated by the following command:
+### Contracting LFR Model Augmentation
+The contracting LFR model augmentation can be evaluated using:
 ```bash
 python3 cascaded_tanks_example.py --seed 3 --LFR_struct contr
 ```
