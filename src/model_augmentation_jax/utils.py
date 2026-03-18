@@ -53,6 +53,35 @@ def NRMSE_loss(Yhat: Array,
     return float(jnp.mean(jnp.sqrt(jnp.mean((Y - Yhat)**2, axis=0)) / jnp.std(Y, axis=0)))
 
 
+def BestFitRatio(Yhat: Array,
+                 Y: Array,
+                 ) -> float:
+    """
+    Computes the Best Fit Ratio between a measured and simulated output trajectory.
+
+    Parameters
+    ----------
+    Yhat : ndarray
+        Simulated output trajectory.
+    Y : ndarray
+        Measured output trajectory.
+
+    Returns
+    -------
+    bfr : float
+    Best Fit Ratio.Best Fit Ratio.
+    """
+    Y = vec_reshape(Y.copy())
+    Yhat = vec_reshape(Yhat.copy())
+    Ymean = jnp.mean(Y, axis=0)
+
+    t = jnp.sum(jnp.mean((Y - Yhat)**2, axis=1))
+    b = jnp.sum(jnp.mean((Y - Ymean)**2, axis=1))
+    bfr = float(jnp.maximum(1 - jnp.sqrt(t/b), 0))
+
+    return bfr
+
+
 def build_N_from_XYZ(
         X: Array,
         Y: Array,
