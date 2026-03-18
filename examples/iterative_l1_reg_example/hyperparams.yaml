@@ -1,0 +1,26 @@
+# ANN parameters
+hidden_layers: 1
+nodes_per_layer: 8
+activation: tanh
+seed: 0  # random seed for initialization
+
+# LFR matrix structure
+nz_a: 1
+nw_a: 1
+
+# FPI settings
+fpi_max: 10
+fpi_tol: 0.00001
+
+# Regularization options
+ann_lipschitz: 0.1  # coefficient for regularizing the Lipschitz bound of the ANN
+epsilon: 0.001  # threshold + constant to avoid division by zero
+
+# Optimization options
+adam_epochs: 500
+lbfgs_epochs: 1000
+lbfgs_memory: 20
+
+# re-weighting L1 regularization options
+max_iters: 20
+termination_rel_cond: 0.01  # If regularization coefficients change less than 1% --> terminate iteration

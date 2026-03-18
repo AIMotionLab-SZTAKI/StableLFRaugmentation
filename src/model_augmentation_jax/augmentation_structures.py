@@ -847,7 +847,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         Dyu_mask = jnp.array(Dyu_mask, dtype=jnp.float64)
 
         Dyw_b = np.array(th[-10])
-        Dyw_b_mask = jnp.ones_like(Dyw_b)
+        Dyw_b_mask = np.ones_like(Dyw_b)
         Dyw_b_mask[np.abs(Dyw_b) <= eps] = 0.
         Dyw_b_mask = jnp.array(Dyw_b_mask, dtype=jnp.float64)
 
