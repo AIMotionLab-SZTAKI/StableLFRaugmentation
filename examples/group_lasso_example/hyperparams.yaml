@@ -1,0 +1,20 @@
+# ANN parameters
+hl: 1  # hidden layers
+nodes: 8  # nodes per layer
+act_fun: tanh  # activation function
+
+# regularization options
+rho_x0: 0.001  # only when nx_a > 0
+
+# training options
+adam_epochs: 500
+lbfgs_epochs: 1000
+
+# thresholds for zero coefficients
+zc_x: 0.001
+zc_w: 0.001
+zc_z: 0.1
+
+# state estimation for testing (only applicable for dynamic structures)
+state_init_window: 6
+RTS_iters: 5
