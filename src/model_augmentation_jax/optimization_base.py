@@ -160,8 +160,8 @@ class AugmentationBase(object):
         """
         phys_params_idx = self.physical_param_idx
         if not self.tune_physical_params:
-            phys_params_idx -= 1
-        return params[:-phys_params_idx]
+            phys_params_idx += 1
+        return params[:phys_params_idx]
 
     def set_regularization_terms(self,
                                  rho_base: float = 0.,

@@ -84,14 +84,14 @@ class StaticLFRAugmentation(AugmentationBase):
             The number of redundant dimensions in the latent variable w_a.
         """
         th = self.params
-        Cz_a = np.array(th[-2])
+        Cz_a = np.array(th[-3])
         Dzu_a = np.array(th[-1])
         ANN_params = self.get_network_params(th)
         W0 = np.array(ANN_params[0])
         W_last = np.array(ANN_params[-2])
         b_last = np.array(ANN_params[-1])
-        Bw_a = np.array(th[-7])
-        Dyw_a = np.array(th[-3])
+        Bw_a = np.array(th[-9])
+        Dyw_a = np.array(th[-5])
 
         # zero-out coefficients smaller than self.zero_coeff
         Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
