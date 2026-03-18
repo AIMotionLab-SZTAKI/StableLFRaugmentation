@@ -334,7 +334,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         self.Dzw_dim2 = nw + known_sys.nx + known_sys.ny
         self.n = max(self.Dzw_dim1, self.Dzw_dim2)
         if mask_params is not None:
-            self.W_mask = self.create_LFR_matrix_mask(mask_params, mask_eps)
+            self.W_mask = self._create_LFR_matrix_mask(mask_params, mask_eps)
         else:
             self.W_mask = None
         self.model_step_with_iter_count = None
@@ -474,6 +474,106 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
                 w_reduction += 1
 
         return z_reduction, w_reduction
+
+    def save_LFR_matrices(self, filename: str,
+                          ) -> None:
+        """
+        Saves the final LFR matrices for further analysis of masking.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file (including the whole path and the .npz extension) to save the matrices to.
+        """
+        th = self.params
+        A = np.array(th[-16])
+        Bu = np.array(th[-15])
+        Bw_b = np.array(th[-14])
+        Bw_a = np.array(th[-13])
+        Cy = np.array(th[-12])
+        Dyu = np.array(th[-11])
+        Dyw_b = np.array(th[-10])
+        Dyw_a = np.array(th[-9])
+        Cz_b = np.array(th[-8])
+        Cz_a = np.array(th[-7])
+        Dzu_b = np.array(th[-6])
+        Dzu_a = np.array(th[-5])
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw)
+        if self.W_mask is not None:
+            A *= self.W_mask["A"]
+            Bu *= self.W_mask["Bu"]
+            Bw_b *= self.W_mask["Bw_b"]
+            Bw_a *= self.W_mask["Bw_a"]
+            Cy *= self.W_mask["Cy"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Cz_b *= self.W_mask["Cz_b"]
+            Cz_a *= self.W_mask["Cz_a"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+            Dzw *= self.W_mask["Dzw"]
+        np.savez(filename, A=A, Bu=Bu, Bw_b=Bw_b, Bw_a=Bw_a, Cy=Cy, Dyu=Dyu, Dyw_b=Dyw_b, Dyw_a=Dyw_a, Cz_b=Cz_b,
+                 Cz_a=Cz_a, Dzu_b=Dzu_b, Dzu_a=Dzu_a, Dzw=Dzw)
+
+    def compute_new_l1_reg_weights(self, eps: float = 1e-4,
+                                   ) -> tuple[Array, float, Array]:
+        """
+        Computes the weights for each enty in the LFR matrix for the next iteration in the re-weighted L1 regularization
+        scheme applied for automatic model structure discovery.
+
+        Parameters
+        ----------
+        eps: float, optional
+            Added small, positive constant in the denominator to avoid singularity. Can also be interpreted as a threshold.
+
+        Returns
+        -------
+        new_weights: ndarray
+            New L1 weights for each element in the LFR matrix.
+        zero_elements_ratio : float
+            Number of zero elements in the LFR matrix divided by the number of all elements in the matrix.
+        W_vec : ndarray
+            Vectorized LFR matrix. (can be used for masking)
+        """
+        th = self.params
+        A = np.array(th[-16]).reshape(-1)
+        Bu = np.array(th[-15]).reshape(-1)
+        Bw_b = np.array(th[-14]).reshape(-1)
+        Bw_a = np.array(th[-13]).reshape(-1)
+        Cy = np.array(th[-12]).reshape(-1)
+        Dyu = np.array(th[-11]).reshape(-1)
+        Dyw_b = np.array(th[-10]).reshape(-1)
+        Dyw_a = np.array(th[-9]).reshape(-1)
+        Cz_b = np.array(th[-8]).reshape(-1)
+        Cz_a = np.array(th[-7]).reshape(-1)
+        Dzu_b = np.array(th[-6]).reshape(-1)
+        Dzu_a = np.array(th[-5]).reshape(-1)
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        W_vec = np.hstack((A, Bu, Bw_b, Bw_a, Cy, Dyu, Dyw_b, Dyw_a, Cz_b, Cz_a, Dzu_b, Dzu_a,
+                           np.array(Dzw).reshape(-1)))
+        new_weights = jnp.array(1. / (np.abs(W_vec) + eps), dtype=jnp.float64)
+        # count values that are smaller than eps in absolute value
+        zero_elements_num = (np.abs(W_vec) < eps).sum()
+        zero_elements_ratio = zero_elements_num / W_vec.shape[0]
+        return new_weights, zero_elements_ratio, W_vec
 
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                                x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
@@ -633,7 +733,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             for i in range(5, 17):
                 W_dim += self.params[-i].reshape(-1).shape[0]
             W_dim += self.Dzw_dim1 * self.Dzw_dim2
-            reg_coeffs = np.ones(shape=(W_dim,), dtype=np.float64)
+            reg_coeffs = np.zeros(shape=(W_dim,), dtype=np.float64)
 
         @jax.jit
         def LFR_matrix_l1_reg(params):
@@ -711,15 +811,88 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             return cost
         return group_lasso_fun
 
-    def create_LFR_matrix_mask(self, th, eps):
-        # TODO: implement in sub-classes as well
-        raise NotImplementedError
+    def _create_LFR_matrix_mask(self,
+                               th: list[Array],
+                               eps: float,
+                               ) -> dict[str, Array]:
+        """Creates the mask for the LFR matrices by thresholding."""
+        A = np.array(th[-16])
+        A_mask = np.ones_like(A)
+        A_mask[np.abs(A) <= eps] = 0.
+        A_mask = jnp.array(A_mask, dtype=jnp.float64)
 
-    def save_LFR_matrices(self, filename):
-        raise NotImplementedError
+        Bu = np.array(th[-15])
+        Bu_mask = np.ones_like(Bu)
+        Bu_mask[np.abs(Bu) <= eps] = 0.
+        Bu_mask = jnp.array(Bu_mask, dtype=jnp.float64)
 
-    def compute_new_l1_reg_weights(self, eps=1e-4):
-        raise NotImplementedError
+        Bw_b = np.array(th[-14])
+        Bw_b_mask = np.ones_like(Bw_b)
+        Bw_b_mask[np.abs(Bw_b) <= eps] = 0.
+        Bw_b_mask = jnp.array(Bw_b_mask, dtype=jnp.float64)
+
+        Bw_a = np.array(th[-13])
+        Bw_a_mask = np.ones_like(Bw_a)
+        Bw_a_mask[np.abs(Bw_a) <= eps] = 0.
+        Bw_a_mask = jnp.array(Bw_a_mask, dtype=jnp.float64)
+
+        Cy = np.array(th[-12])
+        Cy_mask = np.ones_like(Cy)
+        Cy_mask[np.abs(Cy) <= eps] = 0.
+        Cy_mask = jnp.array(Cy_mask, dtype=jnp.float64)
+
+        Dyu = np.array(th[-11])
+        Dyu_mask = np.ones_like(Dyu)
+        Dyu[np.abs(Dyu) <= eps] = 0.
+        Dyu_mask = jnp.array(Dyu_mask, dtype=jnp.float64)
+
+        Dyw_b = np.array(th[-10])
+        Dyw_b_mask = jnp.ones_like(Dyw_b)
+        Dyw_b_mask[np.abs(Dyw_b) <= eps] = 0.
+        Dyw_b_mask = jnp.array(Dyw_b_mask, dtype=jnp.float64)
+
+        Dyw_a = np.array(th[-9])
+        Dyw_a_mask = np.ones_like(Dyw_a)
+        Dyw_a_mask[np.abs(Dyw_a) <= eps] = 0.
+        Dyw_a_mask = jnp.array(Dyw_a_mask, dtype=jnp.float64)
+
+        Cz_b = np.array(th[-8])
+        Cz_b_mask = np.ones_like(Cz_b)
+        Cz_b_mask[np.abs(Cz_b) <= eps] = 0.
+        Cz_b_mask = jnp.array(Cz_b_mask, dtype=jnp.float64)
+
+        Cz_a = np.array(th[-7])
+        Cz_a_mask = np.ones_like(Cz_a)
+        Cz_a_mask[np.abs(Cz_a) <= eps] = 0.
+        Cz_a_mask = jnp.array(Cz_a_mask, dtype=jnp.float64)
+
+        Dzu_b = np.array(th[-6])
+        Dzu_b_mask = np.ones_like(Dzu_b)
+        Dzu_b_mask[np.abs(Dzu_b) <= eps] = 0.
+        Dzu_b_mask = jnp.array(Dzu_b_mask, dtype=jnp.float64)
+
+        Dzu_a = np.array(th[-5])
+        Dzu_a_mask = np.ones_like(Dzu_a)
+        Dzu_a_mask[np.abs(Dzu_a) <= eps] = 0.
+        Dzu_a_mask = jnp.array(Dzu_a_mask, dtype=jnp.float64)
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw)
+        Dzw_mask = np.ones_like(Dzw)
+        Dzw_mask[np.abs(Dzw) <= eps] = 0.
+        Dzw_mask = jnp.array(Dzw_mask, dtype=jnp.float64)
+
+        return {"A": A_mask, "Bu": Bu_mask, "Bw_b": Bw_b_mask, "Bw_a": Bw_a_mask, "Cy": Cy_mask, "Dyu": Dyu_mask,
+                "Dyw_b": Dyw_b_mask, "Dyw_a": Dyw_a_mask, "Cz_b": Cz_b_mask, "Cz_a": Cz_a_mask, "Dzu_b": Dzu_b_mask,
+                "Dzu_a": Dzu_a_mask, "Dzw": Dzw_mask}
 
 
 ########################################################################################################################
@@ -803,6 +976,143 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
                          activation=activation, nz=nz, nw=nw, lipschitz_const=lipschitz_const, x0=x0, seed=seed,
                          std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u, fpi_n_max=fpi_n_max,
                          fpi_tol=fpi_tol, mask_params=mask_params, mask_eps=mask_eps)
+
+    def save_LFR_matrices(self, filename: str,
+                          ) -> None:
+        """
+        Saves the final LFR matrices for further analysis of masking.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file (including the whole path and the .npz extension) to save the matrices to.
+        """
+        th = self.params
+        A_bar = simple_cayley(th[-21], th[-20])
+        A = np.array(nn.sigmoid(th[-3]) * A_bar * self.contraction_rate)
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-6], th[-5])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw)
+        kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+        kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-3])) / kappa)
+
+        B_bar = general_cayley(th[-18], th[-17], th[-16])
+        Bw = B_bar.T * jnp.exp(th[-2]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+        Bw_b = np.array(Bw[:, :(self.nx + self.ny)])
+        Bw_a = np.array(Bw[:, (self.nx + self.ny):])
+
+        C_bar = general_cayley(th[-11], th[-10], th[-9])
+        sigma_C = (1 / jnp.exp(th[-2])) * kappa_sqrt - nn.sigmoid(th[-1]) / (kappa * jnp.exp(th[-2]) * kappa_sqrt)
+        Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)  # transformation + scaling with Lipschitz const.
+        Cz_b = Cz[:(self.nx + self.nu), :]
+        Cz_a = Cz[(self.nx + self.nu):, :]
+
+        Bu = np.array(th[-19])
+        Cy = np.array(th[-15])
+        Dyu = np.array(th[-14])
+        Dyw_b = np.array(th[-13])
+        Dyw_a = np.array(th[-12])
+        Dzu_b = np.array(th[-8])
+        Dzu_a = np.array(th[-7])
+
+        if self.W_mask is not None:
+            A *= self.W_mask["A"]
+            Bu *= self.W_mask["Bu"]
+            Bw_b *= self.W_mask["Bw_b"]
+            Bw_a *= self.W_mask["Bw_a"]
+            Cy *= self.W_mask["Cy"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Cz_b *= self.W_mask["Cz_b"]
+            Cz_a *= self.W_mask["Cz_a"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+            Dzw *= self.W_mask["Dzw"]
+        np.savez(filename, A=A, Bu=Bu, Bw_b=Bw_b, Bw_a=Bw_a, Cy=Cy, Dyu=Dyu, Dyw_b=Dyw_b, Dyw_a=Dyw_a, Cz_b=Cz_b,
+                 Cz_a=Cz_a, Dzu_b=Dzu_b, Dzu_a=Dzu_a, Dzw=Dzw)
+
+    def sparsity_analysis(self) -> Tuple[int, int]:
+        """
+        Provides a sparsity analysis of LFR matrices.
+
+        Returns
+        -------
+        z_reduction : int
+            The number of redundant dimensions in the latent variable z_a.
+        w_reduction : int
+            The number of redundant dimensions in the latent variable w_a.
+        """
+        th = self.params
+
+        ANN_params = self.get_network_params(th)
+        W0 = np.array(ANN_params[0])
+        W_last = np.array(ANN_params[-2])
+        b_last = np.array(ANN_params[-1])
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-6], th[-5])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar.T / self.lipschitz_const
+        Dzw_ab_aa = np.array(Dzw[self.nx + self.nu:, :])
+        Dzw_ba_aa = np.array(Dzw[:, self.nx + self.ny:])
+
+        kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+        kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-3])) / kappa)
+        B_bar = general_cayley(th[-18], th[-17], th[-16])
+        Bw = B_bar.T * jnp.exp(th[-2]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+        Bw_a = np.array(Bw[:, (self.nx + self.ny):])
+
+        C_bar = general_cayley(th[-11], th[-10], th[-9])
+        sigma_C = (1 / jnp.exp(th[-2])) * kappa_sqrt - nn.sigmoid(th[-1]) / (kappa * jnp.exp(th[-2]) * kappa_sqrt)
+        Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)  # transformation + scaling with Lipschitz const.
+        Cz_a = np.array(Cz[(self.nx + self.nu):, :])
+
+        Dzu_a = np.array(th[-7])
+        Dyw_a = np.array(th[-12])
+
+        # zero-out coefficients smaller than self.zero_coeff
+        Cz_a[np.abs(Cz_a) <= self.zero_coeff] = 0.
+        Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
+        Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
+        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
+        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
+        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
+        W0[np.abs(W0) <= self.zero_coeff] = 0.
+        W_last[np.abs(W_last) <= self.zero_coeff] = 0.
+        b_last[np.abs(b_last) <= self.zero_coeff] = 0.
+
+        z_reduction = 0
+        w_reduction = 0
+        print("Sparsity analysis results:")
+
+        for i in range(self.nz):
+            if (np.max(np.abs(Cz_a[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and
+                    np.max(np.abs(W0[:, i])) <= self.zero_coeff and np.max(np.abs(Dzw_ab_aa[i, :])) <= self.zero_coeff):
+                print(f"z_{i + 1} can be eliminated")
+                z_reduction += 1
+
+        for i in range(self.nw):
+            if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
+                    np.max(np.abs(Bw_a[:, i])) <= self.zero_coeff and np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff and
+                    np.max(np.abs(Dzw_ba_aa[:, i])) <= self.zero_coeff):
+                print(f"w_{i + 1} can be eliminated")
+                w_reduction += 1
+
+        return z_reduction, w_reduction
 
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                                x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
@@ -981,12 +1291,12 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
 
             if self.W_mask is None:
                 x_next = A @ x + params[-19] @ u + Bw_b @ wb + Bw_a @ wa  # x+ = A @ x + Bu @ u + Bw_b @ wb +  Bw_a @ wa
-                y = params[-15] @ x + params[-14] @ u + params[-13] @ wb + params[-12] @ wa  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw @ wa
+                y = params[-15] @ x + params[-14] @ u + params[-13] @ wb + params[-12] @ wa  # y = Cy @ x + Dyu @ u + Dyw_b @ wb + Dyw @ wa
             else:
                 x_next = ((self.W_mask["A"] * A) @ x + (self.W_mask["Bu"] * params[-19]) @ u +
                           (self.W_mask["Bw_b"] * Bw_b) @ wb + (self.W_mask["Bw_a"] * Bw_a) @ wa)  # x+ = A @ x + Bu @ u + Bw_b @ wb + Bw_a @ wa
                 y = ((self.W_mask["Cy"] * params[-15]) @ x + (self.W_mask["Dyu"] * params[-14]) @ u +
-                     (self.W_mask["Dyw_b"] * params[-13]) @ wb + (self.W_mask["Dyw_a"] * params[-12]) @ wa)  # y = Cy @ x + Dyu @ y + Dyw_b @ wb + Dyw_a @ wa
+                     (self.W_mask["Dyw_b"] * params[-13]) @ wb + (self.W_mask["Dyw_a"] * params[-12]) @ wa)  # y = Cy @ x + Dyu @ u + Dyw_b @ wb + Dyw_a @ wa
 
             return x_next, y, iter_num, residual
 
@@ -998,26 +1308,167 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
         self.model_step_with_iter_count = model_step_with_iter_count
         return model_step
 
-    def create_LFR_matrix_mask(self, th, eps):
-        raise NotImplementedError
+    def _create_LFR_matrix_mask(self,
+                               th: list[Array],
+                               eps: float,
+                               ) -> dict[str, Array]:
+        """Creates the mask for the LFR matrices by thresholding."""
+        A_bar = simple_cayley(th[-21], th[-20])
+        A = np.array(nn.sigmoid(th[-3]) * A_bar * self.contraction_rate)
+        A_mask = np.ones_like(A)
+        A_mask[np.abs(A) <= eps] = 0.
+        A_mask = jnp.array(A_mask, dtype=jnp.float64)
 
-    def save_LFR_matrices(self, filename):
-        raise NotImplementedError
+        Bu = np.array(th[-19])
+        Bu_mask = np.ones_like(Bu)
+        Bu_mask[np.abs(Bu) <= eps] = 0.
+        Bu_mask = jnp.array(Bu_mask, dtype=jnp.float64)
 
-    def compute_new_l1_reg_weights(self, eps=1e-4):
-        raise NotImplementedError
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-6], th[-5])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-6], th[-5], th[-4])
+            Dzw = nn.sigmoid(th[-22]) * D_bar.T / self.lipschitz_const
+        kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+        kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-3])) / kappa)
+        Dzw = np.array(Dzw)
+        Dzw_mask = np.ones_like(Dzw)
+        Dzw_mask[np.abs(Dzw) <= eps] = 0.
+        Dzw_mask = jnp.array(Dzw_mask, dtype=jnp.float64)
 
-    def sparsity_analysis(self):
-        raise NotImplementedError
+        B_bar = general_cayley(th[-18], th[-17], th[-16])
+        Bw = B_bar.T * jnp.exp(th[-2]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+        Bw_b = np.array(Bw[:, :(self.nx + self.ny)])
+        Bw_b_mask = np.ones_like(Bw_b)
+        Bw_b_mask[np.abs(Bw_b) <= eps] = 0.
+        Bw_b_mask = jnp.array(Bw_b_mask, dtype=jnp.float64)
 
-    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
-        raise NotImplementedError
+        Bw_a = np.array(Bw[:, (self.nx + self.ny):])
+        Bw_a_mask = np.ones_like(Bw_a)
+        Bw_a_mask[np.abs(Bw_a) <= eps] = 0.
+        Bw_a_mask = jnp.array(Bw_a_mask, dtype=jnp.float64)
+
+        Cy = np.array(th[-15])
+        Cy_mask = np.ones_like(Cy)
+        Cy_mask[np.abs(Cy) <= eps] = 0.
+        Cy_mask = jnp.array(Cy_mask, dtype=jnp.float64)
+
+        Dyu = np.array(th[-14])
+        Dyu_mask = np.ones_like(Dyu)
+        Dyu[np.abs(Dyu) <= eps] = 0.
+        Dyu_mask = jnp.array(Dyu_mask, dtype=jnp.float64)
+
+        Dyw_b = np.array(th[-13])
+        Dyw_b_mask = jnp.ones_like(Dyw_b)
+        Dyw_b_mask[np.abs(Dyw_b) <= eps] = 0.
+        Dyw_b_mask = jnp.array(Dyw_b_mask, dtype=jnp.float64)
+
+        Dyw_a = np.array(th[-12])
+        Dyw_a_mask = np.ones_like(Dyw_a)
+        Dyw_a_mask[np.abs(Dyw_a) <= eps] = 0.
+        Dyw_a_mask = jnp.array(Dyw_a_mask, dtype=jnp.float64)
+
+        C_bar = general_cayley(th[-11], th[-10], th[-9])
+        sigma_C = (1 / jnp.exp(th[-2])) * kappa_sqrt - nn.sigmoid(th[-1]) / (kappa * jnp.exp(th[-2]) * kappa_sqrt)
+        Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)  # transformation + scaling with Lipschitz const.
+        Cz_b = np.array(Cz[:(self.nx + self.nu), :])
+        Cz_b_mask = np.ones_like(Cz_b)
+        Cz_b_mask[np.abs(Cz_b) <= eps] = 0.
+        Cz_b_mask = jnp.array(Cz_b_mask, dtype=jnp.float64)
+
+        Cz_a = np.array(Cz[(self.nx + self.nu):, :])
+        Cz_a_mask = np.ones_like(Cz_a)
+        Cz_a_mask[np.abs(Cz_a) <= eps] = 0.
+        Cz_a_mask = jnp.array(Cz_a_mask, dtype=jnp.float64)
+
+        Dzu_b = np.array(th[-8])
+        Dzu_b_mask = np.ones_like(Dzu_b)
+        Dzu_b_mask[np.abs(Dzu_b) <= eps] = 0.
+        Dzu_b_mask = jnp.array(Dzu_b_mask, dtype=jnp.float64)
+
+        Dzu_a = np.array(th[-7])
+        Dzu_a_mask = np.ones_like(Dzu_a)
+        Dzu_a_mask[np.abs(Dzu_a) <= eps] = 0.
+        Dzu_a_mask = jnp.array(Dzu_a_mask, dtype=jnp.float64)
+
+        return {"A": A_mask, "Bu": Bu_mask, "Bw_b": Bw_b_mask, "Bw_a": Bw_a_mask, "Cy": Cy_mask, "Dyu": Dyu_mask,
+                "Dyw_b": Dyw_b_mask, "Dyw_a": Dyw_a_mask, "Cz_b": Cz_b_mask, "Cz_a": Cz_a_mask, "Dzu_b": Dzu_b_mask,
+                "Dzu_a": Dzu_a_mask, "Dzw": Dzw_mask}
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
-        raise NotImplementedError
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-6], th[-5])
+                Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-6], th[-5], th[-4])
+                Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-6], th[-5], th[-4])
+                Dzw = nn.sigmoid(th[-22]) * D_bar.T / self.lipschitz_const
+            Dzw_ab_aa = Dzw[self.nx + self.nu:, :]
+
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-3])) / kappa)
+            C_bar = general_cayley(th[-11], th[-10], th[-9])
+            sigma_C = (1 / jnp.exp(th[-2])) * kappa_sqrt - nn.sigmoid(th[-1]) / (kappa * jnp.exp(th[-2]) * kappa_sqrt)
+            Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)  # transformation + scaling with Lipschitz const.
+            Cz_a = Cz[(self.nx + self.nu):, :]
+
+            Dzu_a = th[-7]
+            ANN_params = self.get_network_params(th)
+            W0 = ANN_params[0]
+            for i in range(self.nz):
+                cost += tau * jnp.sqrt(jnp.sum(Cz_a[i, :] ** 2) + jnp.sum(Dzu_a[i, :] ** 2) + jnp.sum(W0[:, i] ** 2) +
+                                       jnp.sum(Dzw_ab_aa[i, :] ** 2))
+            return cost
+
+        return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
-        raise NotImplementedError
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            ANN_params = self.get_network_params(th)
+            W_last = ANN_params[-2]
+            b_last = ANN_params[-1]
+
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-6], th[-5])
+                Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-6], th[-5], th[-4])
+                Dzw = nn.sigmoid(th[-22]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-6], th[-5], th[-4])
+                Dzw = nn.sigmoid(th[-22]) * D_bar.T / self.lipschitz_const
+            Dzw_ba_aa = Dzw[:, self.nx+self.ny:]
+
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-3])) / kappa)
+            B_bar = general_cayley(th[-18], th[-17], th[-16])
+            Bw = B_bar.T * jnp.exp(th[-2]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+            Bw_a = Bw[:, (self.nx + self.ny):]
+
+            Dyw_a = th[-12]
+
+            for i in range(self.nw):
+                cost += tau * jnp.sqrt(jnp.sum(W_last[i, :] ** 2) + b_last[i] ** 2 + jnp.sum(Bw_a[:, i] ** 2) +
+                                         jnp.sum(Dyw_a[:, i] ** 2) + jnp.sum(Dzw_ba_aa[:, i] ** 2))
+            return cost
+        return group_lasso_fun
+
+    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        raise NotImplementedError("L1 regularization for automatic structure discovery is currently only available for the well-posed parametrization.")
+
+    def compute_new_l1_reg_weights(self, eps=1e-4):
+        raise NotImplementedError("L1 regularization for automatic structure discovery is currently only available for the well-posed parametrization.")
 
 
 ########################################################################################################################
@@ -1457,13 +1908,13 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
 
         if self.Dzw_dim1 == self.Dzw_dim2:
             D_bar = simple_cayley(th[-4], th[-3])
-            Dzw = nn.sigmoid(th[-1]) * D_bar / self.Lipscitz_const
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
         elif self.Dzw_dim1 > self.Dzw_dim2:
             D_bar = general_cayley(th[-4], th[-3], th[-2])
-            Dzw = nn.sigmoid(th[-1]) * D_bar / self.Lipscitz_const
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
         else:
             D_bar = general_cayley(th[-4], th[-3], th[-2])
-            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.Lipscitz_const
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
         Dzw_ab_aa = np.array(Dzw[self.nx_b + self.nu:, :])
         Dzw_ba_aa = np.array(Dzw[:, self.nx_b + self.ny:])
 
@@ -1485,11 +1936,8 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         Cz_ba[np.abs(Cz_ba) <= self.zero_coeff] = 0.
         Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
         Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
-        # Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
-        # Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
-        # Temporarily disregard Dzw matrix until better solution (these values never reach 0)
-        Dzw_ab_aa = np.zeros_like(Dzw_ba_aa)
-        Dzw_ba_aa = np.zeros_like(Dzw_ba_aa)
+        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
+        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
         W0[np.abs(W0) <= self.zero_coeff] = 0.
         W_last[np.abs(W_last) <= self.zero_coeff] = 0.
         b_last[np.abs(b_last) <= self.zero_coeff] = 0.
@@ -1530,6 +1978,135 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
                 xa_reduction += 1
 
         return z_reduction, w_reduction, xa_reduction
+
+    def save_LFR_matrices(self, filename: str,
+                          ) -> None:
+        """
+        Saves the final LFR matrices for further analysis of masking.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file (including the whole path and the .npz extension) to save the matrices to.
+        """
+        th = self.params
+        A_bb = np.array(th[-25])
+        A_ba = np.array(th[-24])
+        A_ab = np.array(th[-23])
+        A_aa = np.array(th[-22])
+        Bu_b = np.array(th[-21])
+        Bu_a = np.array(th[-20])
+        Bw_bb = np.array(th[-19])
+        Bw_ba = np.array(th[-18])
+        Bw_ab = np.array(th[-17])
+        Bw_aa = np.array(th[-16])
+        Cy_b = np.array(th[-15])
+        Cy_a = np.array(th[-14])
+        Dyu = np.array(th[-13])
+        Dyw_b = np.array(th[-12])
+        Dyw_a = np.array(th[-11])
+        Cz_bb = np.array(th[-10])
+        Cz_ba = np.array(th[-9])
+        Cz_ab = np.array(th[-8])
+        Cz_aa = np.array(th[-7])
+        Dzu_b = np.array(th[-6])
+        Dzu_a = np.array(th[-5])
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw)
+        if self.W_mask is not None:
+            A_bb *= self.W_mask["A_bb"]
+            A_ba *= self.W_mask["A_ba"]
+            A_ab *= self.W_mask["A_ab"]
+            A_aa *= self.W_mask["A_aa"]
+            Bu_b *= self.W_mask["Bu_b"]
+            Bu_a *= self.W_mask["Bu_a"]
+            Bw_bb *= self.W_mask["Bw_bb"]
+            Bw_ba *= self.W_mask["Bw_ba"]
+            Bw_ab *= self.W_mask["Bw_ab"]
+            Bw_aa *= self.W_mask["Bw_aa"]
+            Cy_b *= self.W_mask["Cy_b"]
+            Cy_a *= self.W_mask["Cy_a"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Cz_bb *= self.W_mask["Cz_bb"]
+            Cz_ba *= self.W_mask["Cz_ba"]
+            Cz_ab *= self.W_mask["Cz_ab"]
+            Cz_aa *= self.W_mask["Cz_aa"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+            Dzw *= self.W_mask["Dzw"]
+        np.savez(filename, A_bb=A_bb, A_ba=A_ba, A_ab=A_ab, A_aa=A_aa, Bu_b=Bu_b, Bu_a=Bu_a, Bw_bb=Bw_bb, Bw_ba=Bw_ba,
+                 Bw_ab=Bw_ab, Bw_aa=Bw_aa, Cy_b=Cy_b, Cy_a=Cy_a, Dyu=Dyu, Dyw_b=Dyw_b, Dyw_a=Dyw_a, Cz_bb=Cz_bb,
+                 Cz_ba=Cz_ba, Cz_ab=Cz_ab, Cz_aa=Cz_aa, Dzu_b=Dzu_b, Dzu_a=Dzu_a, Dzw=Dzw)
+
+    def compute_new_l1_reg_weights(self, eps: float = 1e-4,
+                                   ) -> tuple[Array, float, Array]:
+        """
+        Computes the weights for each enty in the LFR matrix for the next iteration in the re-weighted L1 regularization
+        scheme applied for automatic model structure discovery.
+
+        Parameters
+        ----------
+        eps: float, optional
+            Added small, positive constant in the denominator to avoid singularity. Can also be interpreted as a threshold.
+
+        Returns
+        -------
+        new_weights: ndarray
+            New L1 weights for each element in the LFR matrix.
+        zero_elements_ratio : float
+            Number of zero elements in the LFR matrix divided by the number of all elements in the matrix.
+        W_vec : ndarray
+            Vectorized LFR matrix. (can be used for masking)
+        """
+        th = self.params
+        A_bb = np.array(th[-25]).reshape(-1)
+        A_ba = np.array(th[-24]).reshape(-1)
+        A_ab = np.array(th[-23]).reshape(-1)
+        A_aa = np.array(th[-22]).reshape(-1)
+        Bu_b = np.array(th[-21]).reshape(-1)
+        Bu_a = np.array(th[-20]).reshape(-1)
+        Bw_bb = np.array(th[-19]).reshape(-1)
+        Bw_ba = np.array(th[-18]).reshape(-1)
+        Bw_ab = np.array(th[-17]).reshape(-1)
+        Bw_aa = np.array(th[-16]).reshape(-1)
+        Cy_b = np.array(th[-15]).reshape(-1)
+        Cy_a = np.array(th[-14]).reshape(-1)
+        Dyu = np.array(th[-13]).reshape(-1)
+        Dyw_b = np.array(th[-12]).reshape(-1)
+        Dyw_a = np.array(th[-11]).reshape(-1)
+        Cz_bb = np.array(th[-10]).reshape(-1)
+        Cz_ba = np.array(th[-9]).reshape(-1)
+        Cz_ab = np.array(th[-8]).reshape(-1)
+        Cz_aa = np.array(th[-7]).reshape(-1)
+        Dzu_b = np.array(th[-6]).reshape(-1)
+        Dzu_a = np.array(th[-5]).reshape(-1)
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw).reshape(-1)
+        W_vec = np.hstack((A_bb, A_ba, A_ab, A_aa, Bu_b, Bu_a, Bw_bb, Bw_ba, Bw_ab, Bw_aa, Cy_b, Cy_a, Dyu, Dyw_b, Dyw_a,
+                           Cz_bb, Cz_ba, Cz_ab, Cz_aa, Dzu_b, Dzu_a, Dzw))
+        new_weights = jnp.array(1. / (np.abs(W_vec) + eps), dtype=jnp.float64)
+        # count values that are smaller than eps in absolute value
+        zero_elements_num = (np.abs(W_vec) < eps).sum()
+        zero_elements_ratio = zero_elements_num / W_vec.shape[0]
+        return new_weights, zero_elements_ratio, W_vec
 
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                               x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
@@ -1832,17 +2409,180 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         return group_lasso_fun
 
     def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
-        raise NotImplementedError("Should be implemented in child class")
+        if reg_coeffs is None:
+            W_dim = 0
+            for i in range(5, 25):
+                W_dim += self.params[-i].reshape(-1).shape[0]
+            W_dim += self.Dzw_dim1 * self.Dzw_dim2
+            reg_coeffs = np.zeros(shape=(W_dim,), dtype=np.float64)
 
-    def create_LFR_matrix_mask(self, th, eps):
-        # TODO: implement in sub-classes as well
-        raise NotImplementedError
+        @jax.jit
+        def LFR_matrix_l1_reg(params):
+            A_bb = params[-25].reshape(-1)
+            A_ba = params[-24].reshape(-1)
+            A_ab = params[-23].reshape(-1)
+            A_aa = params[-22].reshape(-1)
+            Bu_b = params[-21].reshape(-1)
+            Bu_a = params[-20].reshape(-1)
+            Bw_bb = params[-19].reshape(-1)
+            Bw_ba = params[-18].reshape(-1)
+            Bw_ab = params[-17].reshape(-1)
+            Bw_aa = params[-16].reshape(-1)
+            Cy_b = params[-15].reshape(-1)
+            Cy_a = params[-14].reshape(-1)
+            Dyu = params[-13].reshape(-1)
+            Dyw_b = params[-12].reshape(-1)
+            Dyw_a = params[-11].reshape(-1)
+            Cz_bb = params[-10].reshape(-1)
+            Cz_ba = params[-9].reshape(-1)
+            Cz_ab = params[-8].reshape(-1)
+            Cz_aa = params[-7].reshape(-1)
+            Dzu_b = params[-6].reshape(-1)
+            Dzu_a = params[-5].reshape(-1)
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(params[-4], params[-3])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(params[-4], params[-3], params[-2])
+                Dzw = nn.sigmoid(params[-1]) * D_bar.T / self.lipschitz_const
+            W_vec = jnp.hstack((A_bb, A_ba, A_ab, A_aa, Bu_b, Bu_a, Bw_bb, Bw_ba, Bw_ab, Bw_aa, Cy_b, Cy_a, Dyu, Dyw_b,
+                                Dyw_a, Cz_bb, Cz_ba, Cz_ab, Cz_aa, Dzu_b, Dzu_a, Dzw.reshape(-1)))
+            return tau * jnp.sum(jnp.abs(W_vec * reg_coeffs))
+        return LFR_matrix_l1_reg
 
-    def save_LFR_matrices(self, filename):
-        raise NotImplementedError
+    def _create_LFR_matrix_mask(self,
+                               th: list[Array],
+                               eps: float,
+                               ) -> dict[str, Array]:
+        """Creates the mask for the LFR matrices by thresholding."""
 
-    def compute_new_l1_reg_weights(self, eps=1e-4):
-        raise NotImplementedError
+        A_bb = np.array(th[-25])
+        A_bb_mask = np.ones_like(A_bb)
+        A_bb_mask[np.abs(A_bb) <= eps] = 0.
+        A_bb_mask = jnp.array(A_bb_mask, dtype=jnp.float64)
+
+        A_ba = np.array(th[-24])
+        A_ba_mask = np.ones_like(A_ba)
+        A_ba_mask[np.abs(A_ba) <= eps] = 0.
+        A_ba_mask = jnp.array(A_ba_mask, dtype=jnp.float64)
+
+        A_ab = np.array(th[-23])
+        A_ab_mask = np.ones_like(A_ab)
+        A_ab_mask[np.abs(A_ab) <= eps] = 0.
+        A_ab_mask = jnp.array(A_ab_mask, dtype=jnp.float64)
+
+        A_aa = np.array(th[-22])
+        A_aa_mask = np.ones_like(A_aa)
+        A_aa_mask[np.abs(A_aa) <= eps] = 0.
+        A_aa_mask = jnp.array(A_aa_mask, dtype=jnp.float64)
+
+        Bu_b = np.array(th[-21])
+        Bu_b_mask = np.ones_like(Bu_b)
+        Bu_b_mask[np.abs(Bu_b) <= eps] = 0.
+        Bu_b_mask = jnp.array(Bu_b_mask, dtype=jnp.float64)
+
+        Bu_a = np.array(th[-20])
+        Bu_a_mask = np.ones_like(Bu_a)
+        Bu_a_mask[np.abs(Bu_a) <= eps] = 0.
+        Bu_a_mask = jnp.array(Bu_a_mask, dtype=jnp.float64)
+
+        Bw_bb = np.array(th[-19])
+        Bw_bb_mask = np.ones_like(Bw_bb)
+        Bw_bb_mask[np.abs(Bw_bb) <= eps] = 0.
+        Bw_bb_mask = jnp.array(Bw_bb_mask, dtype=jnp.float64)
+
+        Bw_ba = np.array(th[-18])
+        Bw_ba_mask = np.ones_like(Bw_ba)
+        Bw_ba_mask[np.abs(Bw_ba) <= eps] = 0.
+        Bw_ba_mask = jnp.array(Bw_ba_mask, dtype=jnp.float64)
+
+        Bw_ab = np.array(th[-17])
+        Bw_ab_mask = np.ones_like(Bw_ab)
+        Bw_ab_mask[np.abs(Bw_ab) <= eps] = 0.
+        Bw_ab_mask = jnp.array(Bw_ab_mask, dtype=jnp.float64)
+
+        Bw_aa = np.array(th[-16])
+        Bw_aa_mask = np.ones_like(Bw_aa)
+        Bw_aa_mask[np.abs(Bw_aa) <= eps] = 0.
+        Bw_aa_mask = jnp.array(Bw_aa_mask, dtype=jnp.float64)
+
+        Cy_b = np.array(th[-15])
+        Cy_b_mask = np.ones_like(Cy_b)
+        Cy_b_mask[np.abs(Cy_b) <= eps] = 0.
+        Cy_b_mask = jnp.array(Cy_b_mask, dtype=jnp.float64)
+
+        Cy_a = np.array(th[-14])
+        Cy_a_mask = np.ones_like(Cy_a)
+        Cy_a_mask[np.abs(Cy_a) <= eps] = 0.
+        Cy_a_mask = jnp.array(Cy_a_mask, dtype=jnp.float64)
+
+        Dyu = np.array(th[-13])
+        Dyu_mask = np.ones_like(Dyu)
+        Dyu[np.abs(Dyu) <= eps] = 0.
+        Dyu_mask = jnp.array(Dyu_mask, dtype=jnp.float64)
+
+        Dyw_b = np.array(th[-12])
+        Dyw_b_mask = jnp.ones_like(Dyw_b)
+        Dyw_b_mask[np.abs(Dyw_b) <= eps] = 0.
+        Dyw_b_mask = jnp.array(Dyw_b_mask, dtype=jnp.float64)
+
+        Dyw_a = np.array(th[-11])
+        Dyw_a_mask = np.ones_like(Dyw_a)
+        Dyw_a_mask[np.abs(Dyw_a) <= eps] = 0.
+        Dyw_a_mask = jnp.array(Dyw_a_mask, dtype=jnp.float64)
+
+        Cz_bb = np.array(th[-10])
+        Cz_bb_mask = np.ones_like(Cz_bb)
+        Cz_bb_mask[np.abs(Cz_bb) <= eps] = 0.
+        Cz_bb_mask = jnp.array(Cz_bb_mask, dtype=jnp.float64)
+
+        Cz_ba = np.array(th[-9])
+        Cz_ba_mask = np.ones_like(Cz_ba)
+        Cz_ba_mask[np.abs(Cz_ba) <= eps] = 0.
+        Cz_ba_mask = jnp.array(Cz_ba_mask, dtype=jnp.float64)
+
+        Cz_ab = np.array(th[-8])
+        Cz_ab_mask = np.ones_like(Cz_ab)
+        Cz_ab_mask[np.abs(Cz_ab) <= eps] = 0.
+        Cz_ab_mask = jnp.array(Cz_ab_mask, dtype=jnp.float64)
+
+        Cz_aa = np.array(th[-7])
+        Cz_aa_mask = np.ones_like(Cz_aa)
+        Cz_aa_mask[np.abs(Cz_aa) <= eps] = 0.
+        Cz_aa_mask = jnp.array(Cz_aa_mask, dtype=jnp.float64)
+
+        Dzu_b = np.array(th[-6])
+        Dzu_b_mask = np.ones_like(Dzu_b)
+        Dzu_b_mask[np.abs(Dzu_b) <= eps] = 0.
+        Dzu_b_mask = jnp.array(Dzu_b_mask, dtype=jnp.float64)
+
+        Dzu_a = np.array(th[-5])
+        Dzu_a_mask = np.ones_like(Dzu_a)
+        Dzu_a_mask[np.abs(Dzu_a) <= eps] = 0.
+        Dzu_a_mask = jnp.array(Dzu_a_mask, dtype=jnp.float64)
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw = np.array(Dzw)
+        Dzw_mask = np.ones_like(Dzw)
+        Dzw_mask[np.abs(Dzw) <= eps] = 0.
+        Dzw_mask = jnp.array(Dzw_mask, dtype=jnp.float64)
+
+        return {"A_bb": A_bb_mask, "A_ba": A_ba_mask, "A_ab": A_ab_mask, "A_aa": A_aa_mask, "Bu_b": Bu_b_mask,
+                "Bu_a": Bu_a_mask, "Bw_bb": Bw_bb_mask, "Bw_ba": Bw_ba_mask, "Bw_ab": Bw_ab_mask, "Bw_aa": Bw_aa_mask,
+                "Cy_b": Cy_b_mask, "Cy_a": Cy_a_mask, "Dyu": Dyu_mask, "Dyw_b": Dyw_b_mask, "Dyw_a": Dyw_a_mask,
+                "Cz_bb": Cz_bb_mask, "Cz_ba": Cz_ba_mask, "Cz_ab": Cz_ab_mask, "Cz_aa": Cz_aa_mask, "Dzu_b": Dzu_b_mask,
+                "Dzu_a": Dzu_a_mask, "Dzw": Dzw_mask}
 
 
 ########################################################################################################################
@@ -1884,6 +2624,209 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
                          lipschitz_const=lipschitz_const, x0=x0, seed=seed, std_x=std_x, std_u=std_u, std_y=std_y,
                          mu_x=mu_x, mu_u=mu_u, mu_y=mu_y, fpi_n_max=fpi_n_max, fpi_tol=fpi_tol, mask_params=mask_params,
                          mask_eps=mask_eps)
+
+    def sparsity_analysis(self) -> Tuple[int, int, int]:
+        """
+        Provides a sparsity analysis of LFR matrices.
+
+        Returns
+        -------
+        z_reduction : int
+            The number of redundant dimensions in the latent variable z_a.
+        w_reduction : int
+            The number of redundant dimensions in the latent variable w_a.
+        xa_reduction : int
+            The number of redundant dimensions in the augmented states x_a.
+        """
+        th = self.params
+
+        A_bar = simple_cayley(th[-24], th[-23])
+        A = nn.sigmoid(th[-22]) * A_bar * self.contraction_rate
+        A_ab = np.array(A[self.nx_b:, :self.nx_b])
+        A_ba = np.array(A[:self.nx_b, self.nx_b:])
+        A_aa = np.array(A[self.nx_b:, self.nx_b:])
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        Dzw_ab_aa = np.array(Dzw[self.nx_b + self.nu:, :])
+        Dzw_ba_aa = np.array(Dzw[:, self.nx_b + self.ny:])
+
+        kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+        kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-22])) / kappa)
+        if self.Bw_dim1 == self.Bw_dim2:
+            B_bar = simple_cayley(th[-19], th[-18])
+        elif self.Bw_dim1 > self.Bw_dim2:
+            B_bar = general_cayley(th[-19], th[-18], th[-17])
+        else:
+            B_bar = general_cayley(th[-19], th[-18], th[-17]).T
+        Bw = B_bar * jnp.exp(th[-16]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+        Bw_ab = np.array(Bw[self.nx_b:, :(self.nx_b + self.ny)])
+        Bw_aa = np.array(Bw[self.nx_b:, (self.nx_b + self.ny):])
+        Bw_ba = np.array(Bw[:self.nx_b, (self.nx_b + self.ny):])
+
+        sigma_C = (1 / jnp.exp(th[-16])) * kappa_sqrt - nn.sigmoid(th[-7]) / (kappa * jnp.exp(th[-16]) * kappa_sqrt)
+        if self.Cz_dim1 == self.Cz_dim2:
+            C_bar = simple_cayley(th[-10], th[-9])
+        elif self.Cz_dim1 > self.Cz_dim2:
+            C_bar = general_cayley(th[-10], th[-9], th[-8])
+        else:
+            C_bar = general_cayley(th[-10], th[-9], th[-8]).T
+        # scaling factor sigma_C
+        Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)
+        Cz_ab = np.array(Cz[(self.nx_b + self.nu):, :self.nx_b])
+        Cz_aa = np.array(Cz[(self.nx_b + self.nu):, self.nx_b:])
+        Cz_ba = Cz[:(self.nx_b + self.nu), self.nx_b:]
+
+        Bu_a = np.array(th[-20])
+        Cy_a = np.array(th[-14])
+        Dzu_a = np.array(th[-5])
+        Dyw_a = np.array(th[-11])
+
+        ANN_params = self.get_network_params(th)
+        W0 = np.array(ANN_params[0])
+        W_last = np.array(ANN_params[-2])
+        b_last = np.array(ANN_params[-1])
+
+        # zero-out coefficients smaller than self.zero_coeff
+        A_ab[np.abs(A_ab) <= self.zero_coeff] = 0.
+        A_ba[np.abs(A_ba) <= self.zero_coeff] = 0.
+        A_aa[np.abs(A_aa) <= self.zero_coeff] = 0.
+        Bu_a[np.abs(Bu_a) <= self.zero_coeff] = 0.
+        Bw_ab[np.abs(Bw_ab) <= self.zero_coeff] = 0.
+        Bw_aa[np.abs(Bw_aa) <= self.zero_coeff] = 0.
+        Bw_ba[np.abs(Bw_ba) <= self.zero_coeff] = 0.
+        Cy_a[np.abs(Cy_a) <= self.zero_coeff] = 0.
+        Cz_ab[np.abs(Cz_ab) <= self.zero_coeff] = 0.
+        Cz_aa[np.abs(Cz_aa) <= self.zero_coeff] = 0.
+        Cz_ba[np.abs(Cz_ba) <= self.zero_coeff] = 0.
+        Dzu_a[np.abs(Dzu_a) <= self.zero_coeff] = 0.
+        Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
+        Dzw_ab_aa[np.abs(Dzw_ab_aa) <= self.zero_coeff] = 0.
+        Dzw_ba_aa[np.abs(Dzw_ba_aa) <= self.zero_coeff] = 0.
+        W0[np.abs(W0) <= self.zero_coeff] = 0.
+        W_last[np.abs(W_last) <= self.zero_coeff] = 0.
+        b_last[np.abs(b_last) <= self.zero_coeff] = 0.
+
+        z_reduction = 0
+        w_reduction = 0
+        xa_reduction = 0
+        print("Sparsity analysis results:")
+
+        for i in range(self.nz):
+            if (np.max(np.abs(Cz_ab[i, :])) <= self.zero_coeff and np.max(
+                    np.abs(Cz_aa[i, :])) <= self.zero_coeff and np.max(np.abs(Dzu_a[i, :])) <= self.zero_coeff and
+                    np.max(np.abs(W0[:, i])) <= self.zero_coeff and np.max(
+                        np.abs(Dzw_ab_aa[i, :])) <= self.zero_coeff):
+                print(f"z_{i + 1} can be eliminated")
+                z_reduction += 1
+
+        for i in range(self.nw):
+            if (np.max(np.abs(W_last[i, :])) <= self.zero_coeff and np.abs(b_last[i]) <= self.zero_coeff and
+                    np.max(np.abs(Bw_ba[:, i])) <= self.zero_coeff and np.max(
+                        np.abs(Bw_aa[:, i])) <= self.zero_coeff and
+                    np.max(np.abs(Dyw_a[:, i])) <= self.zero_coeff and np.max(
+                        np.abs(Dzw_ba_aa[:, i])) <= self.zero_coeff):
+                print(f"w_{i + 1} can be eliminated")
+                w_reduction += 1
+
+        for i in range(self.nx_a):
+            if (np.max(np.abs(A_ab[i, :])) <= self.zero_coeff and np.max(np.abs(A_aa[i, :])) <= self.zero_coeff and
+                    np.max(np.abs(Bu_a[i, :])) <= self.zero_coeff and np.max(
+                        np.abs(Bw_ab[i, :])) <= self.zero_coeff and
+                    np.max(np.abs(Bw_aa[i, :])) <= self.zero_coeff and np.max(
+                        np.abs(Cz_ba[:, i])) <= self.zero_coeff and
+                    np.max(np.abs(Cz_aa[:, i])) <= self.zero_coeff and np.max(
+                        np.abs(Cy_a[:, i])) <= self.zero_coeff and
+                    np.max(np.abs(A_ba[:, i])) <= self.zero_coeff and np.max(
+                        np.abs(A_aa[:, i])) <= self.zero_coeff):
+                print(f"xa_{i + 1} can be eliminated")
+                xa_reduction += 1
+
+        return z_reduction, w_reduction, xa_reduction
+
+    def save_LFR_matrices(self, filename: str,
+                          ) -> None:
+        """
+        Saves the final LFR matrices for further analysis of masking.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file (including the whole path and the .npz extension) to save the matrices to.
+        """
+        th = self.params
+        A_bar = simple_cayley(th[-24], th[-23])
+        A = np.array(nn.sigmoid(th[-22]) * A_bar * self.contraction_rate)
+
+        if self.Dzw_dim1 == self.Dzw_dim2:
+            D_bar = simple_cayley(th[-4], th[-3])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        elif self.Dzw_dim1 > self.Dzw_dim2:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+        else:
+            D_bar = general_cayley(th[-4], th[-3], th[-2])
+            Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+        kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+        kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-22])) / kappa)
+        Dzw = np.array(Dzw)
+
+        sigma_C = (1 / jnp.exp(th[-16])) * kappa_sqrt - nn.sigmoid(th[-7]) / (kappa * jnp.exp(th[-16]) * kappa_sqrt)
+        if self.Cz_dim1 == self.Cz_dim2:
+            C_bar = simple_cayley(th[-10], th[-9])
+        elif self.Cz_dim1 > self.Cz_dim2:
+            C_bar = general_cayley(th[-10], th[-9], th[-8])
+        else:
+            C_bar = general_cayley(th[-10], th[-9], th[-8]).T
+        # scaling factor sigma_C
+        Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)
+        Cz_b = np.array(Cz[:(self.nx_b + self.nu), :])
+        Cz_a = np.array(Cz[(self.nx_b + self.nu):, :])
+
+        if self.Bw_dim1 == self.Bw_dim2:
+            B_bar = simple_cayley(th[-19], th[-18])
+        elif self.Bw_dim1 > self.Bw_dim2:
+            B_bar = general_cayley(th[-19], th[-18], th[-17])
+        else:
+            B_bar = general_cayley(th[-19], th[-18], th[-17]).T
+        Bw = B_bar * jnp.exp(th[-16]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+        Bw_b = np.array(Bw[:, :(self.nx_b + self.ny)])
+        Bw_a = np.array(Bw[:, (self.nx_b + self.ny):])
+
+        Bu_b = np.array(th[-21])
+        Bu_a = np.array(th[-20])
+        Cy_b = np.array(th[-15])
+        Cy_a = np.array(th[-14])
+        Dyu = np.array(th[-13])
+        Dyw_b = np.array(th[-12])
+        Dyw_a = np.array(th[-11])
+        Dzu_b = np.array(th[-6])
+        Dzu_a = np.array(th[-5])
+        if self.W_mask is not None:
+            A *= self.W_mask["A"]
+            Bu_b *= self.W_mask["Bu_b"]
+            Bu_a *= self.W_mask["Bu_a"]
+            Bw_b *= self.W_mask["Bw_b"]
+            Bw_a *= self.W_mask["Bw_a"]
+            Cy_b *= self.W_mask["Cy_b"]
+            Cy_a *= self.W_mask["Cy_a"]
+            Dyu *= self.W_mask["Dyu"]
+            Dyw_b *= self.W_mask["Dyw_b"]
+            Dyw_a *= self.W_mask["Dyw_a"]
+            Cz_b *= self.W_mask["Cz_b"]
+            Cz_a *= self.W_mask["Cz_a"]
+            Dzu_b *= self.W_mask["Dzu_b"]
+            Dzu_a *= self.W_mask["Dzu_a"]
+            Dzw *= self.W_mask["Dzw"]
+        np.savez(filename, A=A, Bu_b=Bu_b, Bu_a=Bu_a, Bw_b=Bw_b, Bw_a=Bw_a, Cy_b=Cy_b, Cy_a=Cy_a, Dyu=Dyu, Dyw_b=Dyw_b,
+                 Dyw_a=Dyw_a, Cz_b=Cz_b, Cz_a=Cz_a, Dzu_b=Dzu_b, Dzu_a=Dzu_a, Dzw=Dzw)
 
     def _initialize_parameters(self, known_sys: Any, hidden_layers: int, nodes_per_layer: int,
                                x0: Optional[Union[Array, list[Array]]], seed: int, activation: str) -> None:
@@ -2104,17 +3047,19 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
             Bw_b = Bw[:, :(self.nx_b + self.ny)]
             Bw_a = Bw[:, (self.nx_b + self.ny):]
 
-            Bu_b = params[-21]
-            Bu_a = params[-20]
-            Bu = jnp.vstack((Bu_b, Bu_a))
-
             if self.W_mask is None:
+                Bu_b = params[-21]
+                Bu_a = params[-20]
+                Bu = jnp.vstack((Bu_b, Bu_a))
                 x_next = A @ x + Bu @ u + Bw_b @ wb + Bw_a @ wa  # x+ = A @ x + Bu @ u + Bw_b @ wb +  Bw_a @ wa
 
                 # y = Cy_b @ xb + Cy_a @ xa + Dyu @ u + Dyw_b @ wb + Dyw @ wa
                 y = params[-15] @ xb + params[-14] @ xa + params[-13] @ u + params[-12] @ wb + params[-11] @ wa
             else:
-                x_next = ((self.W_mask["A"] * A) @ x + (self.W_mask["Bu"] * Bu) @ u + (self.W_mask["Bw_b"] * Bw_b) @ wb +
+                Bu_b = self.W_mask["Bu_b"] * params[-21]
+                Bu_a = self.W_mask["Bu_a"] * params[-20]
+                Bu = jnp.vstack((Bu_b, Bu_a))
+                x_next = ((self.W_mask["A"] * A) @ x + Bu @ u + (self.W_mask["Bw_b"] * Bw_b) @ wb +
                           (self.W_mask["Bw_a"] * Bw_a) @ wa)  # x+ = A @ x + Bu @ u + Bw_b @ wb +  Bw_a @ wa
 
                 # y = Cy_b @ xb + Cy_a @ xa + Dyu @ u + Dyw_b @ wb + Dyw @ wa
@@ -2132,14 +3077,145 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
         self.model_step_with_iter_count = model_step_with_iter_count
         return model_step
 
-    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
-        raise NotImplementedError("Should be implemented in child class")
-
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
-        raise NotImplementedError("Should be implemented in child class")
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            Dzu_a = th[-5]
+            ANN_params = self.get_network_params(th)
+            W0 = ANN_params[0]
+
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-4], th[-3])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+            Dzw_ab_aa = Dzw[(self.nx_b + self.nu):, :]
+
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-22])) / kappa)
+            sigma_C = (1 / jnp.exp(th[-16])) * kappa_sqrt - nn.sigmoid(th[-7]) / (kappa * jnp.exp(th[-16]) * kappa_sqrt)
+            if self.Cz_dim1 == self.Cz_dim2:
+                C_bar = simple_cayley(th[-10], th[-9])
+            elif self.Cz_dim1 > self.Cz_dim2:
+                C_bar = general_cayley(th[-10], th[-9], th[-8])
+            else:
+                C_bar = general_cayley(th[-10], th[-9], th[-8]).T
+            # scaling factor sigma_C
+            Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)
+            Cz_a = Cz[(self.nx_b + self.nu):, :]
+
+            for i in range(self.nz):
+                cost += tau * jnp.sqrt(jnp.sum(Cz_a[i, :] ** 2) + jnp.sum(Dzu_a[i, :] ** 2) +
+                                       jnp.sum(Dzw_ab_aa[i, :] ** 2) + jnp.sum(W0[:, i] ** 2))
+            return cost
+
+        return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
-        raise NotImplementedError("Should be implemented in child class")
+        @jax.jit
+        def group_lasso_fun(th):
+            cost = 0.
+            ANN_params = self.get_network_params(th)
+            W_last = ANN_params[-2]
+            b_last = ANN_params[-1]
+            Dyw_a = th[-11]
+
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-4], th[-3])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+            Dzw_ba_aa = Dzw[:, self.nx_b + self.ny:]
+
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-22])) / kappa)
+            if self.Bw_dim1 == self.Bw_dim2:
+                B_bar = simple_cayley(th[-19], th[-18])
+            elif self.Bw_dim1 > self.Bw_dim2:
+                B_bar = general_cayley(th[-19], th[-18], th[-17])
+            else:
+                B_bar = general_cayley(th[-19], th[-18], th[-17]).T
+            Bw = B_bar * jnp.exp(th[-16]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+            Bw_a = Bw[:, (self.nx_b + self.ny):]
+
+            for i in range(self.nw):
+                cost += tau * jnp.sqrt(jnp.sum(W_last[i, :] ** 2) + b_last[i] ** 2 + jnp.sum(Bw_a[:, i] ** 2) +
+                                       jnp.sum(Dyw_a[:, i] ** 2) + jnp.sum(Dzw_ba_aa[:, i] ** 2))
+            return cost
+
+        return group_lasso_fun
 
     def _add_group_lasso_x(self, tau: float) -> Callable[[list[Array], list[Array]], float]:
-        raise NotImplementedError("Should be implemented in child class")
+        @jax.jit
+        def group_lasso_fun(th, x0):
+            cost = 0.
+
+            A_bar = simple_cayley(th[-24], th[-23])
+            A = nn.sigmoid(th[-22]) * A_bar * self.contraction_rate
+            A_ab = A[self.nx_b:, :self.nx_b]
+            A_ba = A[:self.nx_b, self.nx_b:]
+            A_aa = A[self.nx_b:, self.nx_b:]
+
+            Bu_a = th[-20]
+
+            if self.Dzw_dim1 == self.Dzw_dim2:
+                D_bar = simple_cayley(th[-4], th[-3])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            elif self.Dzw_dim1 > self.Dzw_dim2:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar / self.lipschitz_const
+            else:
+                D_bar = general_cayley(th[-4], th[-3], th[-2])
+                Dzw = nn.sigmoid(th[-1]) * D_bar.T / self.lipschitz_const
+
+            kappa = self.lipschitz_const / (1 - self.lipschitz_const * jnp.linalg.norm(Dzw, 2))
+            kappa_sqrt = jnp.sqrt((1 - nn.sigmoid(th[-22])) / kappa)
+            if self.Bw_dim1 == self.Bw_dim2:
+                B_bar = simple_cayley(th[-19], th[-18])
+            elif self.Bw_dim1 > self.Bw_dim2:
+                B_bar = general_cayley(th[-19], th[-18], th[-17])
+            else:
+                B_bar = general_cayley(th[-19], th[-18], th[-17]).T
+            Bw = B_bar * jnp.exp(th[-16]) * kappa_sqrt * jnp.sqrt(self.contraction_rate)
+            Bw_a = Bw[self.nx_b:, :]
+
+            Cy_a = th[-14]
+
+            sigma_C = (1 / jnp.exp(th[-16])) * kappa_sqrt - nn.sigmoid(th[-7]) / (kappa * jnp.exp(th[-16]) * kappa_sqrt)
+            if self.Cz_dim1 == self.Cz_dim2:
+                C_bar = simple_cayley(th[-10], th[-9])
+            elif self.Cz_dim1 > self.Cz_dim2:
+                C_bar = general_cayley(th[-10], th[-9], th[-8])
+            else:
+                C_bar = general_cayley(th[-10], th[-9], th[-8]).T
+            # scaling factor sigma_C
+            Cz = C_bar * sigma_C * jnp.sqrt(self.contraction_rate)
+            Cz_a = Cz[:, self.nx_b:]
+
+            for i in range(self.nx_a):
+                cost += tau * jnp.sqrt(
+                    jnp.sum(A_ab[i, :] ** 2) + jnp.sum(A_aa[i, :] ** 2) + jnp.sum(Bu_a[i, :] ** 2) +
+                    jnp.sum(Bw_a[i, :] ** 2) + sum([x0i[self.nx_b + i] ** 2 for x0i in x0]) +
+                    jnp.sum(Cz_a[:, i] ** 2) + jnp.sum(Cy_a[:, i] ** 2) + jnp.sum(A_ba[:, i] ** 2) +
+                    jnp.sum(A_aa[:, i] ** 2) - A_aa[i, i] ** 2)
+            return cost
+
+        return group_lasso_fun
+
+    def compute_new_l1_reg_weights(self, eps: float = 1e-4,
+                                   ) -> tuple[Array, float, Array]:
+        raise NotImplementedError("L1 regularization for automatic model augmentation structure discovery is currently"
+                                  "only implemented for the well-posed parametrization.")
+
+    def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        raise NotImplementedError("L1 regularization for automatic model augmentation structure discovery is currently"
+                                  "only implemented for the well-posed parametrization.")
