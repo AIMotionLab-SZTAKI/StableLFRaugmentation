@@ -28,7 +28,9 @@ The well-posed (WP) LFR model augmentation can be evaluated using:
 ```bash
 python3 cascaded_tanks_example.py --seed 3 --LFR_struct WP
 ```
-Note that the reported benchmark results were obtained using this specific random seed. Due to potential differences in numerical behavior across operating systems and Python versions, exact reproducibility of the results may require using the same software environment as reported.
+
+> [!WARNING]
+> Note that the reported benchmark results were obtained using this specific random seed. Due to potential differences in numerical behavior across operating systems and Python versions, exact reproducibility of the results may require using the same software environment as reported.
 
 ### Contracting LFR Model Augmentation
 The contracting LFR model augmentation can be evaluated using:
