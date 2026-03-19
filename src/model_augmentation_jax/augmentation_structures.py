@@ -25,12 +25,7 @@ class StaticLFRAugmentation(AugmentationBase):
                  nw: int,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  Dzw_structure: Optional[str] = None,
                  ) -> None:
         """
@@ -50,10 +45,9 @@ class StaticLFRAugmentation(AugmentationBase):
             Initial state(s).
         seed : int or list, optional
             Initialization seed(s).
-        std_x, std_u, std_y : ndarray, optional
-            Standard deviations for normalization.
-        mu_x, mu_u, mu_y : ndarray, optional
-            Means for normalization.
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
         Dzw_structure : str, optional
             If "lower", the $D_{zw}$ matrix is implemented as a strictly lower triangular matrix, if "upper", than a
             strictly lower triangular matrix. If None, $D_{zw}\equiv 0$ is applied.
@@ -69,8 +63,7 @@ class StaticLFRAugmentation(AugmentationBase):
         else:
             raise ValueError("Dzw_structure must be either 'upper' or 'lower' or None (for zero matrix).")
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
-                         activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
-                         mu_x=mu_x, mu_u=mu_u)
+                         activation=activation, x0=x0, seed=seed, norm_dict=norm_dict)
 
     def sparsity_analysis(self) -> Tuple[int, int]:
         """
@@ -276,12 +269,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
                  lipschitz_const: float,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  fpi_n_max: int = 100,
                  fpi_tol: float = 1e-3,
                  mask_params: Optional[list[Array]] = None,
@@ -310,10 +298,9 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             Initial state(s).
         seed : int or list, optional
             Initialization seed(s).
-        std_x, std_u, std_y : ndarray, optional
-            Standard deviations for normalization.
-        mu_x, mu_u, mu_y : ndarray, optional
-            Means for normalization.
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
         fpi_n_max : int, optional
             Maximum iteration for the Fixed-Point Iterations during model evaluation. Defaults to 100.
         fpi_tol : float, optional
@@ -339,8 +326,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             self.W_mask = None
         self.model_step_with_iter_count = None
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
-                         activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
-                         mu_x=mu_x, mu_u=mu_u)
+                         activation=activation, x0=x0, seed=seed, norm_dict=norm_dict)
 
     def simulate(self,
                  U: Union[Array, list[Array]],
@@ -912,12 +898,7 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
                  lipschitz_const: float,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  fpi_n_max: int = 100,
                  fpi_tol: float = 1e-3,
                  contraction_rate: float = 1.,
@@ -947,10 +928,9 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
             Initial state(s).
         seed : int or list, optional
             Initialization seed(s).
-        std_x, std_u, std_y : ndarray, optional
-            Standard deviations for normalization.
-        mu_x, mu_u, mu_y : ndarray, optional
-            Means for normalization.
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
         fpi_n_max : int, optional
             Maximum iteration for the Fixed-Point Iterations during model evaluation. Defaults to 100.
         fpi_tol : float, optional
@@ -974,8 +954,8 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
             raise ValueError("contraction_rate must be between 0 and 1")
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
                          activation=activation, nz=nz, nw=nw, lipschitz_const=lipschitz_const, x0=x0, seed=seed,
-                         std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u, fpi_n_max=fpi_n_max,
-                         fpi_tol=fpi_tol, mask_params=mask_params, mask_eps=mask_eps)
+                         norm_dict=norm_dict, fpi_n_max=fpi_n_max, fpi_tol=fpi_tol, mask_params=mask_params,
+                         mask_eps=mask_eps)
 
     def save_LFR_matrices(self, filename: str,
                           ) -> None:
@@ -1485,12 +1465,7 @@ class DynamicLFRAugmentation(AugmentationBase):
                  nw_a: int,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  Dzw_structure: Optional[str] = None,
                  ) -> None:
         """
@@ -1516,10 +1491,9 @@ class DynamicLFRAugmentation(AugmentationBase):
             Initial state(s).
         seed : int or list, optional
             Initialization seed(s).
-        std_x, std_u, std_y : ndarray, optional
-            Standard deviations for normalization.
-        mu_x, mu_u, mu_y : ndarray, optional
-            Means for normalization.
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
         Dzw_structure : str, optional
             If "lower", the $D_{zw}$ matrix is implemented as a strictly lower triangular matrix, if "upper", than a
             strictly lower triangular matrix. If None, $D_{zw}\equiv 0$ is applied.
@@ -1533,14 +1507,20 @@ class DynamicLFRAugmentation(AugmentationBase):
         self.Dzw_structure = Dzw_structure
 
         # combined normalization constants for base and augmented states (augmented states assumed to be zero-mean and std. of 1)
-        self.std_xb = np.ones(known_sys.nx) if std_x is None else std_x
-        self.mu_xb = np.zeros(known_sys.nx) if mu_x is None else mu_x
+        if norm_dict is None:
+            self.std_xb = jnp.ones(known_sys.nx, dtype=jnp.float64)
+            self.mu_xb = jnp.zeros(known_sys.nx, dtype=jnp.float64)
+        else:
+            self.std_xb = jnp.array(norm_dict["std_x"], dtype=jnp.float64)
+            self.mu_xb = jnp.array(norm_dict["mean_x"], dtype=jnp.float64)
         std_x = np.hstack((self.std_xb.copy(), np.ones(self.nx_a)))
         mu_x = np.hstack((self.mu_xb.copy(), np.zeros(self.nx_a)))
+        norm_mod = norm_dict.copy()
+        norm_mod["std_x"] = std_x
+        norm_mod["mean_x"] = mu_x
 
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
-                         activation=activation, x0=x0, seed=seed, std_y=std_y, std_x=std_x, std_u=std_u, mu_y=mu_y,
-                         mu_x=mu_x, mu_u=mu_u)
+                         activation=activation, x0=x0, seed=seed, norm_dict=norm_mod)
         self.nx = known_sys.nx + n_augm_states
 
     def sparsity_analysis(self) -> Tuple[int, int, int]:
@@ -1849,12 +1829,7 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
                  lipschitz_const : float,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  fpi_n_max: int = 100,
                  fpi_tol: float = 1e-3,
                  mask_params: Optional[list[Array]] = None,
@@ -1866,14 +1841,21 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         self.nx_a = n_augm_states
 
         # combined normalization constants for base and augmented states (augmented states assumed to be zero-mean and std. of 1)
-        self.std_xb = np.ones(known_sys.nx) if std_x is None else std_x
-        self.mu_xb = np.zeros(known_sys.nx) if mu_x is None else mu_x
+        if norm_dict is None:
+            self.std_xb = jnp.ones(known_sys.nx, dtype=jnp.float64)
+            self.mu_xb = jnp.zeros(known_sys.nx, dtype=jnp.float64)
+        else:
+            self.std_xb = jnp.array(norm_dict["std_x"], dtype=jnp.float64)
+            self.mu_xb = jnp.array(norm_dict["mean_x"], dtype=jnp.float64)
         std_x = np.hstack((self.std_xb.copy(), np.ones(self.nx_a)))
         mu_x = np.hstack((self.mu_xb.copy(), np.zeros(self.nx_a)))
+        norm_mod = norm_dict.copy()
+        norm_mod["std_x"] = std_x
+        norm_mod["mean_x"] = mu_x
         super().__init__(known_sys=known_sys, hidden_layers=hidden_layers, nodes_per_layer=nodes_per_layer,
                          activation=activation, nz=nz_a, nw=nw_a, lipschitz_const=lipschitz_const, x0=x0, seed=seed,
-                         std_x=std_x, std_u=std_u, std_y=std_y, mu_x=mu_x, mu_u=mu_u, mu_y=mu_y, fpi_n_max=fpi_n_max,
-                         fpi_tol=fpi_tol, mask_params=mask_params, mask_eps=mask_eps)
+                         norm_dict=norm_mod, fpi_n_max=fpi_n_max, fpi_tol=fpi_tol, mask_params=mask_params,
+                         mask_eps=mask_eps)
         self.nx = known_sys.nx + n_augm_states
 
     def sparsity_analysis(self) -> Tuple[int, int, int]:
@@ -2600,12 +2582,7 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
                  lipschitz_const : float,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  fpi_n_max: int = 100,
                  fpi_tol: float = 1e-3,
                  contraction_rate : float = 1.,
@@ -2621,9 +2598,8 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
             raise ValueError("contraction_rate must be between 0 and 1")
         super().__init__(known_sys=known_sys, n_augm_states=n_augm_states, hidden_layers=hidden_layers,
                          nodes_per_layer=nodes_per_layer, activation=activation, nz_a=nz_a, nw_a=nw_a,
-                         lipschitz_const=lipschitz_const, x0=x0, seed=seed, std_x=std_x, std_u=std_u, std_y=std_y,
-                         mu_x=mu_x, mu_u=mu_u, mu_y=mu_y, fpi_n_max=fpi_n_max, fpi_tol=fpi_tol, mask_params=mask_params,
-                         mask_eps=mask_eps)
+                         lipschitz_const=lipschitz_const, x0=x0, seed=seed, norm_dict=norm_dict, fpi_n_max=fpi_n_max,
+                         fpi_tol=fpi_tol, mask_params=mask_params, mask_eps=mask_eps)
 
     def sparsity_analysis(self) -> Tuple[int, int, int]:
         """

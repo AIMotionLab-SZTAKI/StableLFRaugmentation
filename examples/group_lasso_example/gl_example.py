@@ -156,12 +156,12 @@ if __name__ == "__main__":
     mu_u = np.mean(U_train, axis=0)
     std_x = np.std(Xhat_train_fp, axis=0)
     mu_x = np.mean(Xhat_train_fp, axis=0)
+    norm = {"std_y": std_y, "mean_y": mu_y, "std_u": std_u, "mean_u": mu_u, "std_x": std_x, "mean_x": mu_x}
 
     if nxa > 0:
         model = DynamicLFRAugmentation(known_sys=fp_model, n_augm_states=nxa, hidden_layers=hyperparams["hl"],
                                        nodes_per_layer=hyperparams["nodes"], activation=hyperparams["act_fun"],
-                                       nz_a=nza, nw_a=nwa, seed=seed, std_x=std_x, std_u=std_u, std_y=std_y, mu_x=mu_x,
-                                       mu_u=mu_u, mu_y=mu_y)
+                                       nz_a=nza, nw_a=nwa, seed=seed, norm_dict=norm)
         if gl_var == "x":
             model.set_regularization_terms(rho_x0=hyperparams["rho_x0"], tau_x=rho_gl)
             model.set_optimization_parameters(adam_epochs=hyperparams["adam_epochs"],
@@ -180,8 +180,7 @@ if __name__ == "__main__":
     else:
         model = StaticLFRAugmentation(known_sys=fp_model, hidden_layers=hyperparams["hl"],
                                       nodes_per_layer=hyperparams["nodes"], activation=hyperparams["act_fun"], nz=nza,
-                                      nw=nwa, seed=seed, std_x=std_x, std_u=std_u, std_y=std_y, mu_x=mu_x, mu_u=mu_u,
-                                      mu_y=mu_y)
+                                      nw=nwa, seed=seed, norm_dict=norm)
         if gl_var == "x":
             raise ValueError("Regularizing augmented states is not possible for static structures!")
         elif gl_var == "w":

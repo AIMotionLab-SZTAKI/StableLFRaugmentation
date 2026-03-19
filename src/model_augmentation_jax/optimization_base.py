@@ -40,12 +40,7 @@ class AugmentationBase(object):
                  activation: str,
                  x0: Optional[Union[Array, list[Array]]] = None,
                  seed: Union[int, list[int]] = 42,
-                 std_x: Optional[np.ndarray] = None,
-                 std_u: Optional[np.ndarray] = None,
-                 std_y: Optional[np.ndarray] = None,
-                 mu_x: Optional[np.ndarray] = None,
-                 mu_u: Optional[np.ndarray] = None,
-                 mu_y: Optional[np.ndarray] = None,
+                 norm_dict: Optional[dict[str, Array]] = None,
                  ) -> None:
         """
         Initialize model structure.
@@ -64,25 +59,31 @@ class AugmentationBase(object):
             Initial state(s).
         seed : int or list, optional
             Initialization seed(s).
-        std_x, std_u, std_y : ndarray, optional
-            Standard deviations for normalization.
-        mu_x, mu_u, mu_y : ndarray, optional
-            Means for normalization.
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
         """
 
-        self.nx = known_sys.nx  # TODO: overwrite it for dynamic augmentation
+        self.nx = known_sys.nx
         self.ny = known_sys.ny
         self.nu = known_sys.nu
 
         self.tune_physical_params, self.init_phys_params = verify_known_sys(known_sys)
 
-        self.std_x = np.ones(known_sys.nx) if std_x is None else std_x
-        self.std_u = np.ones(known_sys.nu) if std_u is None else std_u
-        self.std_y = np.ones(known_sys.ny) if std_y is None else std_y
-
-        self.mu_x = np.zeros(known_sys.nx) if mu_x is None else mu_x
-        self.mu_u = np.zeros(known_sys.nu) if mu_u is None else mu_u
-        self.mu_y = np.zeros(known_sys.ny) if mu_y is None else mu_y
+        if norm_dict is None:
+            self.std_x = jnp.ones(known_sys.nx, dtype=jnp.float64)
+            self.std_u = jnp.ones(known_sys.nu, dtype=jnp.float64)
+            self.std_y = jnp.ones(known_sys.ny, dtype=jnp.float64)
+            self.mu_x = jnp.zeros(known_sys.nx, dtype=jnp.float64)
+            self.mu_u = jnp.zeros(known_sys.nu, dtype=jnp.float64)
+            self.mu_y = jnp.zeros(known_sys.ny, dtype=jnp.float64)
+        else:
+            self.std_x = jnp.array(norm_dict["std_x"], dtype=jnp.float64)
+            self.std_u = jnp.array(norm_dict["std_u"], dtype=jnp.float64)
+            self.std_y = jnp.array(norm_dict["std_y"], dtype=jnp.float64)
+            self.mu_x = jnp.array(norm_dict["mean_x"], dtype=jnp.float64)
+            self.mu_u = jnp.array(norm_dict["mean_u"], dtype=jnp.float64)
+            self.mu_y = jnp.array(norm_dict["mean_y"], dtype=jnp.float64)
 
         self.model_step = self._create_jitted_model_step(known_sys, hidden_layers, activation)
 

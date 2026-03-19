@@ -92,6 +92,7 @@ if __name__ == "__main__":
     mu_u = np.mean(U_train, axis=0)
     std_x = np.std(Xhat_train_fp, axis=0)
     mu_x = np.mean(Xhat_train_fp, axis=0)
+    norm = {"std_y": std_y, "mean_y": mu_y, "std_u": std_u, "mean_u": mu_u, "std_x": std_x, "mean_x": mu_x}
 
     # create storage for iterative L1 regularization
     e_base = float(jnp.sum(((Yhat_train_fp - Y_train)/std_y) ** 2) / Y_train.shape[0])
@@ -105,8 +106,7 @@ if __name__ == "__main__":
         model = StaticWellPosedLFRAugmentation(known_sys=fp_model, hidden_layers=hyperparams["hidden_layers"],
                                                nodes_per_layer=hyperparams["nodes_per_layer"],
                                                activation=hyperparams["activation"], nz=hyperparams["nz_a"],
-                                               nw=hyperparams["nw_a"], seed=hyperparams["seed"], std_y=std_y,
-                                               std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u,
+                                               nw=hyperparams["nw_a"], seed=hyperparams["seed"], norm_dict=norm,
                                                fpi_n_max=hyperparams["fpi_max"], fpi_tol=hyperparams["fpi_tol"],
                                                lipschitz_const=10.05)
         if i > 0:
@@ -142,8 +142,7 @@ if __name__ == "__main__":
     model = StaticWellPosedLFRAugmentation(known_sys=fp_model, hidden_layers=hyperparams["hidden_layers"],
                                            nodes_per_layer=hyperparams["nodes_per_layer"],
                                            activation=hyperparams["activation"], nz=hyperparams["nz_a"],
-                                           nw=hyperparams["nw_a"], seed=hyperparams["seed"], std_y=std_y,
-                                           std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u,
+                                           nw=hyperparams["nw_a"], seed=hyperparams["seed"], norm_dict=norm,
                                            fpi_n_max=hyperparams["fpi_max"], fpi_tol=hyperparams["fpi_tol"],
                                            lipschitz_const=10.05, mask_params=params, mask_eps=hyperparams["epsilon"])
     model.set_regularization_terms(ann_lipschitz_regul_coeff=hyperparams["ann_lipschitz"])
@@ -162,8 +161,7 @@ if __name__ == "__main__":
     model = StaticWellPosedLFRAugmentation(known_sys=fp_model, hidden_layers=hyperparams["hidden_layers"],
                                            nodes_per_layer=hyperparams["nodes_per_layer"],
                                            activation=hyperparams["activation"], nz=hyperparams["nz_a"],
-                                           nw=hyperparams["nw_a"], seed=hyperparams["seed"], std_y=std_y,
-                                           std_x=std_x, std_u=std_u, mu_y=mu_y, mu_x=mu_x, mu_u=mu_u,
+                                           nw=hyperparams["nw_a"], seed=hyperparams["seed"], norm_dict=norm,
                                            fpi_n_max=hyperparams["fpi_max"], fpi_tol=hyperparams["fpi_tol"],
                                            lipschitz_const=10.05)
     model.set_regularization_terms(ann_lipschitz_regul_coeff=hyperparams["ann_lipschitz"])

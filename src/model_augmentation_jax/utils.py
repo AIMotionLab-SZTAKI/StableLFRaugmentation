@@ -132,3 +132,29 @@ def simple_cayley(
     # compute M = Cayley(N)
     M = (I - N) @ jnp.linalg.solve(I + N, I)
     return M
+
+
+def compute_normalization_constants(
+        U: Union[Array, list[Array]],
+        Y: Union[Array, list[Array]],
+        X: Union[Array, list[Array]],
+) -> dict[str, Array]:
+    """Computes normalization constants for a set of U, Y, and X."""
+    if isinstance(U, list):
+        U_all = create_ndarray_from_list(U)
+        Y_all = create_ndarray_from_list(Y)
+        X_all = create_ndarray_from_list(X)
+    else:
+        U_all = vec_reshape(U.copy())
+        Y_all = vec_reshape(Y.copy())
+        X_all = vec_reshape(X.copy())
+
+    std_u = np.std(U_all, axis=0)
+    mu_u = np.std(U_all, axis=0)
+    std_y = np.std(Y_all, axis=0)
+    mu_y = np.std(Y_all, axis=0)
+    std_x = np.std(X_all, axis=0)
+    mu_x = np.mean(X_all, axis=0)
+
+    norm = {"std_u": std_u, "mean_u": mu_u, "std_y": std_y, "mean_y": mu_y, "std_x": std_x, "mean_x": mu_x}
+    return norm

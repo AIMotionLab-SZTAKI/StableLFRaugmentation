@@ -88,14 +88,15 @@ def main():
     mu_u = np.mean(train_u, axis=0)
     std_x = np.std(Xhat_fp, axis=0)
     mu_x = np.mean(Xhat_fp, axis=0)
+    norm = {"std_y": std_y, "mean_y": mu_y, "std_u": std_u, "mean_u": mu_u, "std_x": std_x, "mean_x": mu_x}
 
     if LFR_struct == "WP":
         model = StaticWellPosedLFRAugmentation(known_sys=baseline_mdl, hidden_layers=hyperparams['hidden_layers'],
                                                nodes_per_layer=hyperparams["n_nodes"],
                                                activation=hyperparams["activation"], nz=hyperparams["nz"],
                                                nw=hyperparams["nw"], lipschitz_const=2., seed=seed, x0=x0_init,
-                                               std_x=std_x, std_u=std_u, std_y=std_y, mu_x=mu_x, mu_u=mu_u, mu_y=mu_y,
-                                               fpi_n_max=hyperparams["fpi_n_max"], fpi_tol=hyperparams["fpi_tol"])
+                                               norm_dict=norm, fpi_n_max=hyperparams["fpi_n_max"],
+                                               fpi_tol=hyperparams["fpi_tol"])
         model.set_regularization_terms(rho_base=hyperparams["rho_base"], rho_aug=hyperparams["rho_aug"],
                                        ann_lipschitz_regul_coeff=hyperparams["ann_lipschitz_regul_coeff"])
         model.set_optimization_parameters(adam_epochs=hyperparams["adam_epochs"],
@@ -106,8 +107,8 @@ def main():
                                                  nodes_per_layer=hyperparams["n_nodes"],
                                                  activation=hyperparams["activation_contr"], nz=hyperparams["nz"],
                                                  nw=hyperparams["nw"], lipschitz_const=2., seed=seed, x0=x0_init,
-                                                 std_x=std_x, std_u=std_u, std_y=std_y, mu_x=mu_x, mu_u=mu_u, mu_y=mu_y,
-                                                 fpi_n_max=hyperparams["fpi_n_max"], fpi_tol=hyperparams["fpi_tol"])
+                                                 norm_dict=norm, fpi_n_max=hyperparams["fpi_n_max"],
+                                                 fpi_tol=hyperparams["fpi_tol"])
         model.set_regularization_terms(rho_base=hyperparams["rho_base"], rho_aug=hyperparams["rho_aug"],
                                        ann_lipschitz_regul_coeff=hyperparams["ann_lipschitz_regul_coeff_contr"])
         model.set_optimization_parameters(adam_epochs=hyperparams["adam_epochs_contr"],
