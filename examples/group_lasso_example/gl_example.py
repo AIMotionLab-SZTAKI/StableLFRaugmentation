@@ -1,8 +1,7 @@
 import jax
 import numpy as np
 from jax import numpy as jnp
-from model_augmentation_jax.augmentation_structures import DynamicLFRAugmentation, StaticLFRAugmentation
-from model_augmentation_jax.baseline_models import GeneralNonlinearSystem
+from model_augmentation_jax import DynamicLFRAugmentation, StaticLFRAugmentation, GeneralNonlinearSystem
 from model_augmentation_jax.utils import BestFitRatio
 from matplotlib import pyplot as plt
 import os

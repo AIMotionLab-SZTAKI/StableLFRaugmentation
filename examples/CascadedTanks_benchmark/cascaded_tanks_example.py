@@ -2,8 +2,7 @@ import argparse
 import jax
 from jax import numpy as jnp
 import numpy as np
-from model_augmentation_jax.augmentation_structures import StaticWellPosedLFRAugmentation, StaticContractingLFRAugmentation
-from model_augmentation_jax.baseline_models import GeneralNonlinearSystem
+from model_augmentation_jax import StaticWellPosedLFRAugmentation, StaticContractingLFRAugmentation, GeneralNonlinearSystem
 from matplotlib import pyplot as plt
 import nonlinear_benchmarks as nlb
 import os
