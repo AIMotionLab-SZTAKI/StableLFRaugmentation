@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax_sysid.utils import vec_reshape
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Any
 Array = Union[np.ndarray, jnp.ndarray]
 
 
@@ -154,6 +154,24 @@ class LinearTimeInvariantSystem(GeneralNonlinearSystem):
           u: Array,
           params: Array,
           ) -> Array:
+        """
+        Implements the discrete-time state-transition function of the LTI system.
+
+        Parameters
+        ----------
+        x : ndarray
+            Current state.
+        u : ndarray
+            Current input.
+        params : ndarray
+            Physical parameters (baseline parameters). This is not applicable for LTI systems, only for the general
+            nonlinear model class.
+
+        Returns
+        -------
+        x_next : ndarray
+            The propagated state.
+        """
         x_next = self.A @ vec_reshape(x) + self.B @ vec_reshape(u)
         return x_next.reshape(-1)
 
@@ -162,11 +180,47 @@ class LinearTimeInvariantSystem(GeneralNonlinearSystem):
           u: Array,
           params: Array,
           ) -> Array:
+        """
+        Implements the output map of the LTI system.
+
+        Parameters
+        ----------
+        x : ndarray
+            Current state.
+        u : ndarray
+            Current input.
+        params : ndarray
+            Physical parameters (baseline parameters). This is not applicable for LTI systems, only for the general
+            nonlinear model class.
+
+        Returns
+        -------
+        y : ndarray
+            The current output.
+        """
         y = self.C @ vec_reshape(x) + self.D @ vec_reshape(u)
         return y.reshape(-1)
 
 
-def verify_known_sys(sys):
+def verify_known_sys(
+        sys: Any,
+) -> Tuple[bool, Array]:
+    """
+    Verifies that the provided baseline model is either an instance of the LinearTimeInvariantSystem class or an
+    instance of a subclass of GeneralNonlinearSystem.
+
+    Parameters
+    ----------
+    sys : object
+        The baseline model to be verified.
+
+    Returns
+    -------
+    tune_physical_params : bool
+        Whether the physical parameters (baseline parameters) should be co-estimated with the learning component.
+    init_phys_params : Array
+        Initial physical parameters (baseline parameters).
+    """
     if isinstance(sys, LinearTimeInvariantSystem):
         tune_physical_params = False
     elif issubclass(type(sys), GeneralNonlinearSystem):

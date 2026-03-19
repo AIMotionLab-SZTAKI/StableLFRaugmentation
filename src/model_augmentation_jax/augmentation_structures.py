@@ -16,6 +16,8 @@ Array = Union[np.ndarray, jnp.ndarray]
 #                                       STATIC LFR-BASED STRUCTURE
 ########################################################################################################################
 class StaticLFRAugmentation(AugmentationBase):
+    """Class implementing the simple static LFR-based augmentation structures, where well-posedness is guaranteed
+    by structural constraints on the D_{zw} matrix."""
     def __init__(self,
                  known_sys: Any,
                  hidden_layers: int,
@@ -350,9 +352,9 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         X : ndarray or list of ndarrays
              Simulated state trajectory/trajectories. Shape is (N, nx) for a single trajectory or a list of arrays with
              shape (Ni, nx).
-        iter_counter : ndarray or list of ndararys
+        iter_counter : ndarray or list of ndarrays
             Contains how many fixed-point iterations were needed to evaluate the model at each time step.
-        fpi_residuals : ndarray or list of ndararys
+        fpi_residuals : ndarray or list of ndarrays
             Contains the (approximated) residuals of the fixed-point iterations needed to evaluate the model at each time step.
         """
         # Scale input data and init. state
@@ -714,6 +716,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         return model_step
 
     def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        """Adds L1 regularization on the LFR matrix (if necessary)."""
         if reg_coeffs is None:
             W_dim = 0
             for i in range(5, 17):
@@ -749,6 +752,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         return LFR_matrix_l1_reg
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable z_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -773,6 +777,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
         return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable w_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -1380,6 +1385,7 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
                 "Dzu_a": Dzu_a_mask, "Dzw": Dzw_mask}
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable z_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -1412,6 +1418,7 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
         return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable w_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -1455,6 +1462,8 @@ class StaticContractingLFRAugmentation(StaticWellPosedLFRAugmentation):
 #                                       DYNAMIC LFR-BASED STRUCTURE
 ########################################################################################################################
 class DynamicLFRAugmentation(AugmentationBase):
+    """Class that implements the dynamic (n_{x_a}>0) LFR-based model augmentation structure, where well-posedness is
+    guaranteed by structural constraints on the D_{zw} matrix."""
     def __init__(self,
                  known_sys: Any,
                  n_augm_states: int,
@@ -1753,6 +1762,7 @@ class DynamicLFRAugmentation(AugmentationBase):
         return model_step
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable z_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -1773,6 +1783,7 @@ class DynamicLFRAugmentation(AugmentationBase):
         return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable w_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -1789,6 +1800,7 @@ class DynamicLFRAugmentation(AugmentationBase):
         return group_lasso_fun
 
     def _add_group_lasso_x(self, tau: float) -> Callable[[list[Array], list[Array]], float]:
+        """Adds group-lasso regularization on the variable x_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th, x0):
             cost = 0.
@@ -1818,6 +1830,7 @@ class DynamicLFRAugmentation(AugmentationBase):
 #                                    DYNAMIC WELL-POSED LFR-BASED STRUCTURE
 ########################################################################################################################
 class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
+    """Implements the dynamic LFR-based model augmentation structure with guaranteed well-posedness parametrization."""
     def __init__(self,
                  known_sys: Any,
                  n_augm_states: int,
@@ -1835,6 +1848,46 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
                  mask_params: Optional[list[Array]] = None,
                  mask_eps: float = 1e-4,
                  ) -> None:
+        """
+        Initialize the dynamic well-posed LFR-based model augmentation structure.
+
+        Parameters
+        ----------
+        known_sys : object
+            Baseline (first-principles) model.
+        n_augm_states : int
+            Number of augmented (hidden) states beyond the baseline states.
+        hidden_layers : int
+            Number of hidden layers in the ANN.
+        nodes_per_layer : int
+            Neurons per hidden layer in the ANN.
+        activation : str
+            Activation function for the ANN.
+        nz_a : int
+            Dimension of the latent variable z_a.
+        nw_a : int
+            Dimension of the latent variable w_a.
+        lipschitz_const : float
+            Lipschitz constant of the baseline model.
+        x0 : array or list of arrays, optional
+            Initial state(s).
+        seed : int or list, optional
+            Initialization seed(s).
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
+        fpi_n_max : int, optional
+            Maximum number of iterations for the Fixed Point Iteration algorithm during model evaluations.
+            Defaults to 100.
+        fpi_tol : float, optional
+            Tolerance for the fixed point iterations during model evaluations. Defaults to 1e-3.
+        mask_params : list of ndarrays, optional
+            Parameters of a previously trained model, based on which the new model masks the zero elements of the LFR
+            matrix, i.e., fixes them to zero. If None, no masking is applied. Defaults to None.
+        mask_eps : float, optional
+            If masking is applied, an element is viewed as zero, if it is smaller in absolute value than mask_eps.
+            Defaults to 1e-4.
+        """
         if n_augm_states <= 0: raise ValueError(
             "n_augm_states must be > 0. For augmentation with no additional states, apply a static structure.")
         self.nx_b = known_sys.nx
@@ -2308,6 +2361,7 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         return model_step
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable z_a (if necessary)."""
 
         @jax.jit
         def group_lasso_fun(th):
@@ -2336,6 +2390,7 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization on the variable w_a (if necessary)."""
 
         @jax.jit
         def group_lasso_fun(th):
@@ -2365,6 +2420,7 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         return group_lasso_fun
 
     def _add_group_lasso_x(self, tau: float) -> Callable[[list[Array], list[Array]], float]:
+        """Adds group-lasso regularization on the variable x_a (if necessary)."""
 
         @jax.jit
         def group_lasso_fun(th, x0):
@@ -2391,6 +2447,7 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
         return group_lasso_fun
 
     def _add_lfr_mx_l1_reg(self, tau: float, reg_coeffs: Optional[Array]) -> Callable[[list[Array]], float]:
+        """Adds L1 regularization on the elements of the LFR matrix (if necessary)."""
         if reg_coeffs is None:
             W_dim = 0
             for i in range(5, 25):
@@ -2571,6 +2628,8 @@ class DynamicWellPosedAugmentation(StaticWellPosedLFRAugmentation):
 #                                    DYNAMIC WELL-POSED LFR-BASED STRUCTURE
 ########################################################################################################################
 class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
+    """Implements the dynamic LFR-based model augmentation structure with guaranteed well-posedness and stability (more
+     specifically contracting) parametrization."""
     def __init__(self,
                  known_sys: Any,
                  n_augm_states: int,
@@ -2589,6 +2648,49 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
                  mask_params: Optional[list[Array]] = None,
                  mask_eps: float = 1e-4,
                  ) -> None:
+        """
+        Initialize the dynamic contracting LFR-based model augmentation structure.
+
+        Parameters
+        ----------
+        known_sys : object
+            Baseline (first-principles) model.
+        n_augm_states : int
+            Number of augmented (hidden) states beyond the baseline states.
+        hidden_layers : int
+            Number of hidden layers in the ANN.
+        nodes_per_layer : int
+            Neurons per hidden layer in the ANN.
+        activation : str
+            Activation function for the ANN.
+        nz_a : int
+            Dimension of the latent variable z_a.
+        nw_a : int
+            Dimension of the latent variable w_a.
+        lipschitz_const : float
+            Lipschitz constant of the baseline model.
+        x0 : array or list of arrays, optional
+            Initial state(s).
+        seed : int or list, optional
+            Initialization seed(s).
+        norm_dict : dict, optional
+            Dictionary containing the normalization constants, with keys "std_x", "std_u", "std_y", representing the
+            standard deviations and "mean_x", "mean_y", "mean_u" denoting the means.
+        fpi_n_max : int, optional
+            Maximum number of iterations for the Fixed Point Iteration algorithm during model evaluations.
+            Defaults to 100.
+        fpi_tol : float, optional
+            Tolerance for the fixed point iterations during model evaluations. Defaults to 1e-3.
+        contraction_rate : float, optional
+            Strict upper bound for the contraction rate (i.e., the real contraction rate is always smaller than this
+            value). Must be larger than 0 and smaller than or equal to 1. Defaults to 1.
+        mask_params : list of ndarrays, optional
+            Parameters of a previously trained model, based on which the new model masks the zero elements of the LFR
+            matrix, i.e., fixes them to zero. If None, no masking is applied. Defaults to None.
+        mask_eps : float, optional
+            If masking is applied, an element is viewed as zero, if it is smaller in absolute value than mask_eps.
+            Defaults to 1e-4.
+        """
         self.Bw_dim1 = known_sys.nx + n_augm_states
         self.Bw_dim2 = known_sys.nx + known_sys.ny + nw_a
         self.Cz_dim1 = nz_a + known_sys.nu + known_sys.nx
@@ -3054,6 +3156,7 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
         return model_step
 
     def _add_group_lasso_z(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization to variable z_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -3093,6 +3196,7 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
         return group_lasso_fun
 
     def _add_group_lasso_w(self, tau: float) -> Callable[[list[Array]], float]:
+        """Adds group-lasso regularization to variable w_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th):
             cost = 0.
@@ -3131,6 +3235,7 @@ class DynamicContractingAugmentation(DynamicWellPosedAugmentation):
         return group_lasso_fun
 
     def _add_group_lasso_x(self, tau: float) -> Callable[[list[Array], list[Array]], float]:
+        """Adds group-lasso regularization to variable x_a (if necessary)."""
         @jax.jit
         def group_lasso_fun(th, x0):
             cost = 0.
