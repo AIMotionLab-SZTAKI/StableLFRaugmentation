@@ -1,0 +1,35 @@
+# Hyperparameters for the F1Tenth identification example
+
+# LFR variable dimensions
+nz: 4
+nx_a: 2  # additional states for dynamic augmentation
+nw_static: 3  # nw for the static structures
+nw_dynamic: 5  # nw for dynamic augmentation
+
+# learning component (ANN) settings
+hidden_layers: 1
+nodes_per_layer: 128
+act_fun: "tanh"
+
+# regularization options
+rho_base: 0.005  # regularization of the baseline parameters around nominal values
+rho_x0: 0.0001  # L2 regularization of the initial states (only for dynamic structures)
+ann_lipschitz_regul: 0.1  # for the well-posed parametrization
+
+# Fixed-Point iteration settings
+FPI_max: 10
+FPI_tol: 0.00001
+
+# contraction rate bound (for contracting parametrization)
+contraction_rate: 1.0
+
+# optimization settings
+adam_epochs: 4000
+lbfgs_epochs: 5000
+lr_static: 0.001  # Adam learning rate for static structures
+lr_dynamic: 0.0001  # Adam learning rate for static structures (smaller learning rate is advised for this specific example)
+lbfgs_memory: 20
+verbosity: 50
+
+# additional settings for dynamic structures
+n_lag: 12  # state initialization window
