@@ -379,7 +379,7 @@ class StaticWellPosedLFRAugmentation(AugmentationBase):
             x_next = x_next.reshape(-1)
             return x_next, y
 
-        if N_meas == 1:
+        if not isinstance(U, list):
             _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), vec_reshape(U_scaled))
             iter_counter = YX[:, 0]
             fpi_residuals = YX[:, 1]

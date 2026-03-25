@@ -531,7 +531,7 @@ class AugmentationBase(object):
             x_next = x_next.reshape(-1)
             return x_next, y
 
-        if N_meas == 1:
+        if not isinstance(U, list):
             _, YX = jax.lax.scan(model_step_fixed_params, x0_scaled.reshape(-1), vec_reshape(U_scaled))
             Y = YX[:, 0:self.ny] * self.std_y + self.mu_y
             X = YX[:, self.ny:] * self.std_x + self.mu_x
@@ -544,10 +544,17 @@ class AugmentationBase(object):
                 X.append(YX[:, self.ny:] * self.std_x + self.mu_x)
         return Y, X
 
-    def count_ann_zero_params(self) -> None:
+    def count_ann_zero_params(self) -> Tuple[int, int]:
         """
         Counts the number of zero parameters amongst the learning component (ANN) parameters. Useful when L1
         regularization is used for the ANN parameters.
+
+        Returns
+        -------
+        zero_params : int
+            Number of zero parameters amongst the learning component (ANN) parameters.
+        all_params : int
+            Number of all parameters in the learning component (ANN).
         """
         params = self.get_network_params(self.params)
         n_params = len(params)
@@ -561,7 +568,8 @@ class AugmentationBase(object):
             param_i[np.abs(param_i) <= self.zero_coeff] = 0.
             zero_params += np.count_nonzero(param_i == 0)
 
-        print("Zero ANN parameters: " + str(zero_params) + " from" + str(all_params) + ".")
+        print("Zero ANN parameters: " + str(zero_params) + " from " + str(all_params) + ".")
+        return zero_params, all_params
 
     def learn_x0(self,
                  U: Array,
