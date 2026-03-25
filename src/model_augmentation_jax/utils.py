@@ -1,8 +1,10 @@
 import numpy as np
+import jax
 from jax import numpy as jnp
 from jax_sysid.utils import vec_reshape
+from joblib import Parallel, delayed, cpu_count
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Tuple, Union
 Array = Union[np.ndarray, jnp.ndarray]
 
 
@@ -158,3 +160,88 @@ def compute_normalization_constants(
 
     norm = {"std_u": std_u, "mean_u": mu_u, "std_y": std_y, "mean_y": mu_y, "std_x": std_x, "mean_x": mu_x}
     return norm
+
+
+def find_best_model(
+        models: list[Any],
+        Y: Union[Array, list[Array]],
+        U: Union[Array, list[Array]],
+        X0=None,
+        n_jobs=None,
+        verbose=True,
+        seeds=None,
+        use_training_x0=False,
+        x0_estim_kwargs=None,
+        state_estim_len=None
+) -> Tuple[Any, Array]:
+    """
+    Finds the best model based on simulation RMSE on the provided IO trajectory.
+
+    """
+    if not isinstance(models, list):
+        raise Exception("\033[1mPlease provide a list of models to compare.\033[0m")
+
+    if len(models) == 1:
+        return models[0]
+
+    if isinstance(Y, list):
+        N_meas = len(Y)
+    else:
+        N_meas = 1
+        U = [U.copy()]
+        Y = [Y.copy()]
+
+    if state_estim_len is None:
+        Uhist = [vec_reshape(u) for u in U]
+        Yhist = [vec_reshape(y) for y in Y]
+    else:
+        Uhist = [vec_reshape(u)[:state_estim_len, :] for u in U]
+        Yhist = [vec_reshape(y)[:state_estim_len, :] for y in Y]
+
+    def get_X0(k):
+        if X0 is not None:
+            return X0
+        elif use_training_x0:
+            return models[k].x0
+        else:
+            # estimate x0 based on model
+            if x0_estim_kwargs is None:
+                X0_est = []
+                for i in range(N_meas):
+                    x0i = models[k].learn_x0(Uhist[i], Yhist[i], verbosity=False)
+                    X0_est.append(x0i)
+            else:
+                X0_est = []
+                for i in range(N_meas):
+                    x0i = models[k].learn_x0(Uhist[i], Yhist[i], *x0_estim_kwargs, verbosity=False)
+                    X0_est.append(x0i)
+
+    def score_model(k):
+        if not jax.config.jax_enable_x64:
+            # Enable 64-bit computations
+            jax.config.update("jax_enable_x64", True)
+        X0k = get_X0(k)
+        sim_results = models[k].simulate(U, X0k)
+        Yhat = sim_results[0]
+        rmse = np.mean(np.sqrt(np.mean((create_ndarray_from_list(Y) - create_ndarray_from_list(Yhat)) ** 2, axis=0)))  # RMSE (averaged over all channels)
+        return rmse
+
+    if n_jobs is None:
+        n_jobs = cpu_count()  # Use all available cores by default
+
+    if verbose:
+        print("Evaluating models...\n")
+
+    scores = Parallel(n_jobs=n_jobs)(delayed(score_model)(k) for k in range(len(models)))
+    best_id = np.nanargmin(np.array(scores))  # get best score (lowest RMSE)
+
+    if verbose:
+        print("Scores:")
+        for k in range(len(models)):
+            print(f"Model {k}: RMSE = {scores[k]}")
+        if seeds is None:
+            print(f"Best model: {best_id}, score: {scores[best_id]}")
+        else:
+            print(f"Best model: {best_id}, score: {scores[best_id]} at seed {seeds[best_id]}")
+
+    return models[best_id], scores[best_id]
