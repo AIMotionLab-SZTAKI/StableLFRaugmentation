@@ -42,17 +42,11 @@ fp_model = LinearTimeInvariantSystem(A=A_mx, B=B_mx, C=C_mx)
 
 # simulate baseline model to approximate constants for normalization
 Yhat_train_base, Xhat_train_base = fp_model.simulate(U_train)  # starts from x0 = 0
-
-std_x = np.std(Xhat_train_base, axis=0)
-mu_x = np.mean(Xhat_train_base, axis=0)
-std_y = np.std(Y_train, axis=0)
-mu_y = np.std(Y_train, axis=0)
-std_u = np.std(U_train, axis=0)
-mu_u = np.std(U_train, axis=0)
+norm = compute_normalization_constants(U_train, Y_train, Xhat_train_base)
 
 # create augmented model
 model = StaticLFRAugmentation(known_sys=fp_model, hidden_layers=2, nodes_per_layer=8, activation="tanh", nz=2, nw=2,
-                              std_x=std_x, std_y=std_y, std_u=std_u, mu_x=mu_x, mu_y=mu_y, mu_u=mu_u)
+                              norm_dict=norm)
 
 # set training options
 model.set_optimization_parameters(adam_epochs=100, lbfgs_epochs=500, train_x0=True, verbosity=50)
