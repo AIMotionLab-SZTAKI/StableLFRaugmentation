@@ -1,5 +1,21 @@
 # StableLFRaugmentation
-A unified LFR-based model augmentation approach to combine physics-based models and learning components with well-posedness and stability guarantees.
+A unified LFR-based model augmentation approach to combine physics-based models and learning components with well-posedness and stability guarantees. Contains the code implementation and example scripts for the paper titled *Data-driven augmentation of first-principles models under constraint-free well-posedness and stability guarantees*. The paper is available on arXiv (coming soon).
+
+## Installation
+**1. Clone the repository**
+```bash
+git clone https://github.com/AIMotionLab-SZTAKI/StableLFRaugmentation.git
+cd StableLFRaugmentation
+```
+**2. Create virtual environment (recommended)**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+**3. Install package and dependencies**
+```bash
+pip install -e .
+```
 
 ## Example usage
 The following script illustrates the building blocks of the toolbox with a minimal working example. The [examples](examples/) folder contains several more advanced applications.
@@ -8,9 +24,8 @@ The following script illustrates the building blocks of the toolbox with a minim
 import numpy as np
 import jax
 from matplotlib import pyplot as plt
-from model_augmentation_jax.baseline_models import LinearTimeInvariantSystem
-from model_augmentation_jax.augmentation_structures import StaticLFRAugmentation
-from model_augmentation_jax.utils import NRMSE_loss
+from model_augmentation_jax import LinearTimeInvariantSystem, StaticLFRAugmentation
+from model_augmentation_jax.utils import NRMSE_loss, compute_normalization_constants
 
 
 jax.config.update('jax_platform_name', 'cpu')
@@ -74,3 +89,27 @@ plt.ylabel("Output")
 plt.show()
 ```
 <img width="700" height="300" alt="example0_fig" src="https://github.com/user-attachments/assets/447b685c-3c42-426e-aa19-f8ec1ff4dcd4" />
+
+## License
+This project is licensed under the BSD 3-Clause, see the [LICENSE](LICENSE) file in this repository.
+
+## Citation
+If you use this repository in your research, please cite:
+```bibtex
+coming soon
+```
+
+## Acknowledgments
+Coming soon
+
+## Contact
+For questions or collaboration:
+- Open an issue
+- Contact the maintainers via GitHub
+- Contact the corresponding author: [gyorokbende@sztaki.hu](mailto:gyorokbende@sztaki.hu)
+
+## TODO:
+- [ ] Upload to arXiv
+- [ ] Add paper reference to every Readme in the project
+- [ ] Add citation
+- [ ] Add ack
