@@ -72,6 +72,7 @@ def main():
     train_y = data[0].y
     test_u = data[1].u
     test_y = data[1].y
+    n_init_len = data[1].state_initialization_window_length
 
     # baseline model
     nominal_params = np.array([0.05, 0.05, 0.05, 0.05])
@@ -122,18 +123,18 @@ def main():
     Yhat_train, _, _, _ = model.simulate(train_u, model.x0)
     Yhat_train_fp, _ = baseline_mdl.simulate(train_u, model.x0)
 
-    # state initialization window is 5 according to benchmark rules
-    x0_test = model.learn_x0(U=test_u[:5], Y=test_y[:5], rho_x0=None, RTS_epochs=0, lbfgs_refinement=True,
-                             x0_init=np.array([test_y[0], test_y[0]]))
+    # state initialization window is 50 according to benchmark rules
+    x0_test = model.learn_x0(U=test_u[:n_init_len], Y=test_y[:n_init_len], rho_x0=None, RTS_epochs=0,
+                             lbfgs_refinement=True, x0_init=np.array([test_y[0], test_y[0]]))
     Yhat_test, _, iters, residuals = model.simulate(test_u, x0_test)
-    Yhat_test_fp, _ = baseline_mdl.simulate(test_u, x0_test[:2])
+    Yhat_test_fp, _ = baseline_mdl.simulate(test_u, x0_test)
 
     rmse_train_fp = nlb.error_metrics.RMSE(train_y, Yhat_train_fp[:, 0])
     rmse_train = nlb.error_metrics.RMSE(train_y, Yhat_train[:, 0])
     print(f"Training RMSE: {rmse_train:.4} (baseline model: {rmse_train_fp:.4})")
 
-    rmse_test = nlb.error_metrics.RMSE(test_y[5:], Yhat_test[5:, 0])
-    rmse_test_fp = nlb.error_metrics.RMSE(test_y[5:], Yhat_test_fp[5:, 0])
+    rmse_test = nlb.error_metrics.RMSE(test_y[n_init_len:], Yhat_test[n_init_len:, 0])
+    rmse_test_fp = nlb.error_metrics.RMSE(test_y[n_init_len:], Yhat_test_fp[n_init_len:, 0])
     print(f"Testing RMSE: {rmse_test:.2} (baseline model: {rmse_test_fp:.4})")
 
     fig, ax = plt.subplots(2, 1, layout="tight")

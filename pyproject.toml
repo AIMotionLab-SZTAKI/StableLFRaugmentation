@@ -54,7 +54,7 @@ dependencies = [
     "ml_dtypes==0.5.3",
     "msgpack==1.1.2",
     "nest-asyncio==1.6.0",
-    "nonlinear_benchmarks==1.0.0",
+    "nonlinear_benchmarks==1.0.1",
     "numpy==2.2.6",
     "opt_einsum==3.4.0",
     "optax==0.2.5",
