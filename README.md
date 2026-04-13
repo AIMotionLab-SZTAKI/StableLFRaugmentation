@@ -109,7 +109,7 @@ For questions or collaboration:
 - Contact the corresponding author: [gyorokbende@sztaki.hu](mailto:gyorokbende@sztaki.hu)
 
 ## TODO:
-- [ ] Upload to arXiv
+- [x] Upload to arXiv
 - [ ] Add paper reference to every Readme in the project
 - [ ] Add citation
-- [ ] Add ack
+- [x] Add ack
