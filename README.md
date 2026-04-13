@@ -100,7 +100,7 @@ coming soon
 ```
 
 ## Acknowledgments
-Coming soon
+This project has been supported by the Air Force Office of Scientific Research under award number FA8655-23-1-7061, by The MathWorks Inc., and by the European Union (Horizon Europe, ERC, COMPLETE, 101075836). Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the European Research Council Executive Agency. Neither the European Union nor the other granting authorities can be held responsible for them.
 
 ## Contact
 For questions or collaboration:
