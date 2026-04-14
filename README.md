@@ -96,7 +96,12 @@ This project is licensed under the BSD 3-Clause, see the [LICENSE](LICENSE) file
 ## Citation
 If you use this repository in your research, please cite:
 ```bibtex
-coming soon
+@article{gyorok_data-driven_2026,
+      title={Data-driven augmentation of first-principles models under constraint-free well-posedness and stability guarantees}, 
+      author={Bendegúz Györök and Roel Drenth and Chris Verhoek and Tamás Péni and Maarten Schoukens and Roland Tóth},
+      year={2026},
+      journal={arXiv preprint: arXiv:2604.11421}
+}
 ```
 
 ## Acknowledgments
@@ -111,5 +116,5 @@ For questions or collaboration:
 ## TODO:
 - [x] Upload to arXiv
 - [ ] Add paper reference to every Readme in the project
-- [ ] Add citation
+- [x] Add citation
 - [x] Add ack
