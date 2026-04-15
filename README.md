@@ -112,9 +112,3 @@ For questions or collaboration:
 - Open an issue
 - Contact the maintainers via GitHub
 - Contact the corresponding author: [gyorokbende@sztaki.hu](mailto:gyorokbende@sztaki.hu)
-
-## TODO:
-- [x] Upload to arXiv
-- [ ] Add paper reference to every Readme in the project
-- [x] Add citation
-- [x] Add ack
