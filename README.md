@@ -1,5 +1,5 @@
 # StableLFRaugmentation
-A unified LFR-based model augmentation approach to combine physics-based models and learning components with well-posedness and stability guarantees. Contains the code implementation and example scripts for the paper titled *Data-driven augmentation of first-principles models under constraint-free well-posedness and stability guarantees*. The paper is available on arXiv (coming soon).
+A unified LFR-based model augmentation approach to combine physics-based models and learning components with well-posedness and stability guarantees. Contains the code implementation and example scripts for the paper titled *Data-driven augmentation of first-principles models under constraint-free well-posedness and stability guarantees*. The paper is available on [arXiv](https://arxiv.org/abs/2604.11421).
 
 ## Installation
 **1. Clone the repository**
