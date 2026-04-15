@@ -19,7 +19,7 @@ options:
                             'contr' for contracting parametrization.
 ```
 
-The file `hyperparams.yaml` contains the hyperparameter configuration used to generate the results reported in the paper. Modifying this file allows users to explore alternative configurations; however, such changes naturally can lead to different model performance.
+The file `hyperparams.yaml` contains the hyperparameter configuration used to generate the results reported in the [paper](https://arxiv.org/abs/2604.11421). Modifying this file allows users to explore alternative configurations; however, such changes naturally can lead to different model performance.
 
 All results reported were obtained using **Python 3.10** on **Ubuntu 24.04.3 LTS**.
 
