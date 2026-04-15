@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "model-augmentation-jax"
-version = "0.1.0"
+version = "0.1.1"
 description = "LFR-based model augmentation implemented in JAX with extensions for guaranteed well-posedness and stability."
 authors = [
     {name = "Bendeguz Gyorok", email = "gyorokbende@sztaki.hu"}
