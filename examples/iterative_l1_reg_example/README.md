@@ -9,5 +9,5 @@ python3 l1_reg_example.py
 To try the example with different hyperparameters, edit the `hyperparams.yaml` file.
 
 > [!WARNING]
-> Note that the results reported in the paper were obtained using a slightly different implementation.
+> Note that the results reported in the [paper](https://arxiv.org/abs/2604.11421) were obtained using a slightly different implementation.
 > Consequently, the results produced by the provided script may differ slightly; however, the overall conclusions remain unchanged.
