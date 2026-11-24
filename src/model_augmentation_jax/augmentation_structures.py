@@ -56,9 +56,8 @@ class StaticLFRAugmentation(AugmentationBase):
         """
         self.nz = nz
         self.nw = nw
-        if Dzw_structure == "upper":
-            raise NotImplementedError("Dzw structure can not be an upper triangular matrix at the moment.")
-        elif Dzw_structure == "lower":
+        if Dzw_structure in ("upper", "lower"):
+            # "lower": only Dzw^ab is tuned (z_a depends on w_b), "upper": only Dzw^ba is tuned (z_b depends on w_a)
             self.Dzw_structure = Dzw_structure
         elif Dzw_structure is None:
             self.Dzw_structure = None
@@ -97,11 +96,13 @@ class StaticLFRAugmentation(AugmentationBase):
         Bw_a[np.abs(Bw_a) <= self.zero_coeff] = 0.
         Dyw_a[np.abs(Dyw_a) <= self.zero_coeff] = 0.
 
-        if self.Dzw_structure is not None:  # now only lower-triangular Dzw structure is supported
+        if self.Dzw_structure == "lower":  # now only lower-triangular Dzw structure is supported
             Dzw_ab_state = np.array(th[-12])
             Dzw_ab_state[np.abs(Dzw_ab_state) <= self.zero_coeff] = 0.
             Dzw_ab_output = np.array(th[-11])
             Dzw_ab_output[np.abs(Dzw_ab_output) <= self.zero_coeff] = 0.
+        elif self.Dzw_structure == "upper":
+            raise NotImplementedError
 
         z_reduction = 0
         w_reduction = 0
@@ -142,14 +143,21 @@ class StaticLFRAugmentation(AugmentationBase):
 
         if self.Dzw_structure == "lower":
             self.physical_param_idx = -15
-            keys = jax.random.split(key, 10)
+            keys = jax.random.split(key_params, 10)
             Dzw_ab_state = jax.random.uniform(key=keys[8], shape=(self.nz, self.nx), minval=-1, maxval=1, dtype=jnp.float32)  # Dzw_ab_state = params[-14]
             network_params.append(Dzw_ab_state)
             Dzw_ab_output = jax.random.uniform(key=keys[9], shape=(self.nz, self.ny), minval=-1, maxval=1, dtype=jnp.float32)  # Dzw_ab_output = params[-13]
             network_params.append(Dzw_ab_output)
+        elif self.Dzw_structure == "upper":
+            self.physical_param_idx = -15
+            keys = jax.random.split(key_params, 10)
+            Dzw_ba_state = jax.random.uniform(key=keys[8], shape=(self.nx, self.nw), minval=-1e-3, maxval=1e-3, dtype=jnp.float32)  # Dzw_ba_state = params[-14]
+            network_params.append(Dzw_ba_state)
+            Dzw_ba_input = jax.random.uniform(key=keys[9], shape=(self.nu, self.nw), minval=-1e-3, maxval=1e-3, dtype=jnp.float32)  # Dzw_ba_input = params[-13]
+            network_params.append(Dzw_ba_input)
         else:
             self.physical_param_idx = -13
-            keys = jax.random.split(key, 8)
+            keys = jax.random.split(key_params, 8)
 
         A = jax.random.uniform(key=keys[0], shape=(self.nx, self.nx), minval=-1e-3, maxval=1e-3, dtype=jnp.float32)
         network_params.append(A)  # A = params[-12]
@@ -186,23 +194,33 @@ class StaticLFRAugmentation(AugmentationBase):
         @jax.jit
         def model_step(x, u, params):
 
+            if self.Dzw_structure == "upper":
+                # z_a does not depend on w, hence w_a is computed first
+                za = params[-3] @ x + params[-1] @ u  # z_a = Cz_a @ x + Dzu_a @ u
+                w_a = learning_component(za, params)
+
             # calculate wb zb
             phys_params = self.get_physical_params(params)
-            zb = params[-4] @ x + params[-2] @ u  # z_b = Cz_b @ x + Dzu_b @ u
-            w_b_state = (known_sys.f(zb[:self.nx] * self.std_x + self.mu_x, zb[self.nx:] * self.std_u + self.mu_u,
-                                     phys_params) - self.mu_x) / self.std_x
-            w_b_output = (known_sys.h(zb[:self.nx] * self.std_x + self.mu_x, zb[self.nx:] * self.std_u + self.mu_u,
-                                      phys_params) - self.mu_y) / self.std_y
+            if self.Dzw_structure is None:
+                zb = params[-4] @ x + params[-2] @ u  # z_b = Cz_b @ x + Dzu_b @ u
+                zb_x, zb_u = zb[:self.nx], zb[self.nx:]
+            else:
+                zb = params[-4] @ x + params[-2] @ u  # z_b = Cz_b @ x + Dzu_b @ u
+                zb_x, zb_u = zb[:self.nx], zb[self.nx:]
+            if self.Dzw_structure == "upper":
+                zb_x = zb_x + params[-14] @ w_a  # z_b = Cz_b @ x + Dzu_b @ u + Dzw_ba @ w_a
+                zb_u = zb_u + params[-13] @ w_a
+            w_b_state = (known_sys.f(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_x) / self.std_x
+            w_b_output = (known_sys.h(zb_x * self.std_x + self.mu_x, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_y) / self.std_y
 
             # calculate za and wa
             if self.Dzw_structure is None:
                 za = params[-3] @ x + params[-1] @ u  # z_a = Cz_a @ x + Dzu_a @ u
-            else:  # now only lower-triangular Dzw structure is supported
+                w_a = learning_component(za, params)
+            elif self.Dzw_structure == "lower":
                 za = params[-3] @ x + params[-1] @ u + params[-14] @ w_b_state + params[
                     -13] @ w_b_output  # z_a = Cz_a @ x + Dzu_a @ u + Dzw_ab @ wb
-
-            # ANN learning component
-            w_a = learning_component(za, params)
+                w_a = learning_component(za, params)
 
             # calculate state transition
             x_plus = params[-12] @ x + params[-11] @ u + params[-10] @ w_b_state + params[-9] @ w_a  # x+ = A @ x + Bu @ u + Bw_b @ w_b + Bw_a @ w_a
@@ -1587,6 +1605,8 @@ class DynamicLFRAugmentation(AugmentationBase):
         if self.Dzw_structure == "lower":
             Dzw_ab = np.array(th[-22])
             Dzw_ab[np.abs(Dzw_ab) <= self.zero_coeff] = 0.
+        elif self.Dzw_structure == "upper":
+            raise NotImplementedError
 
         z_reduction = 0
         w_reduction = 0
@@ -1656,6 +1676,11 @@ class DynamicLFRAugmentation(AugmentationBase):
             Dzw_ab = jax.random.uniform(key=keys[16], shape=(self.nz, nx_b + self.ny), minval=-1e-3, maxval=1e-3,
                                         dtype=jnp.float64)
             self.physical_param_idx = -23
+        elif self.Dzw_structure == "upper":
+            keys = jax.random.split(key_params, 17)
+            Dzw_ba = jax.random.uniform(key=keys[16], shape=(self.nx_b+self.nu, self.nw), minval=-1e-3, maxval=1e-3,
+                                        dtype=jnp.float64)
+            self.physical_param_idx = -23
         else:
             keys = jax.random.split(key_params, 16)
             self.physical_param_idx = -22
@@ -1692,6 +1717,8 @@ class DynamicLFRAugmentation(AugmentationBase):
         # add interconnection matrix to optimized variables
         if self.Dzw_structure == 'lower':
             network_params.append(Dzw_ab)  # Dzw_ab = params[-22]
+        elif self.Dzw_structure == 'upper':
+            network_params.append(Dzw_ba)  # Dzw_ba = params[-22]
         network_params.append(A_bb)  # A_bb = params[-21]
         network_params.append(A_ba)  # A_ba = params[-20]
         network_params.append(A_ab)  # A_ab = params[-19]
@@ -1729,8 +1756,16 @@ class DynamicLFRAugmentation(AugmentationBase):
             xb = x[:self.nx_b]
             xa = x[self.nx_b:]
 
+            # za = Cz_ab @ xb + Cz_aa @ xa + Dzu_a @ u
+            za = params[-4] @ xb + params[-3] @ xa + params[-1] @ u
+            if self.Dzw_structure == "upper":
+                # z_a does not depend on w, hence w_a is computed first
+                wa = learning_component(za, params)
+
             # zb = Cz_bb @ xb + Cz_ba @ xa + Dzu_b @ u
             zb = params[-6] @ xb + params[-5] @ xa + params[-2] @ u
+            if self.Dzw_structure == "upper":
+                zb += params[-22] @ wa  # + Dzw_ba @ wa
 
             zb_x = zb[:self.nx_b]
             zb_u = zb[self.nx_b:]
@@ -1739,13 +1774,10 @@ class DynamicLFRAugmentation(AugmentationBase):
             y_fp = (known_sys.h(zb_x * self.std_xb + self.mu_xb, zb_u * self.std_u + self.mu_u, phys_params) - self.mu_y) / self.std_y
             wb = jnp.concatenate((x_plus_fp, y_fp))
 
-            # za = Cz_ab @ xb + Cz_aa @ xa + Dzu_a @ u
-            za = params[-4] @ xb + params[-3] @ xa + params[-1] @ u
-
-            if self.Dzw_structure == "lower":
-                za += params[-22] @ wb
-
-            wa = learning_component(za, params)
+            if self.Dzw_structure != "upper":
+                if self.Dzw_structure == "lower":
+                    za += params[-22] @ wb  # + Dzw_ab @ wb
+                wa = learning_component(za, params)
 
             # xb+ = A_bb @ xb + A_ba @ xa + Bu_b @ u + Bw_bb @ wb + Bw_ba @ wa
             xb_next = params[-21] @ xb + params[-20] @ xa + params[-17] @ u + params[-15] @ wb + params[-14] @ wa
